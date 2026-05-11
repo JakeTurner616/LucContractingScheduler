@@ -6,16 +6,17 @@ import AppShell from "../layouts/AppShell.astro";
   title="Jobs"
   active="jobs"
   heading="Jobs"
-  lede="Create, edit, and review job details before they appear on assigned shifts."
+  lede="Supervisors can create and update scheduled jobs. Workers can view jobs assigned to them."
 >
-  <div slot="actions" class="button-row">
-    <button class="button" type="submit" form="job-form">Create job</button>
+  <div slot="actions" class="button-row requires-supervisor" data-allowed="false">
+    <button class="button" type="submit" form="job-form">Save job</button>
   </div>
 
   <section class="grid two">
-    <section class="card">
+    <section class="card requires-supervisor" data-allowed="false">
       <h2>Job Details</h2>
       <form id="job-form" class="form-grid" data-api-form="jobs">
+        <input type="hidden" name="id" data-job-id />
         <div class="field">
           <label for="title">Job name</label>
           <input id="title" name="title" required />
@@ -24,20 +25,72 @@ import AppShell from "../layouts/AppShell.astro";
           <label for="location">Location</label>
           <input id="location" name="location" />
         </div>
+        <div class="grid two">
+          <div class="field">
+            <label for="job-date">Date</label>
+            <input id="job-date" name="job_date" type="date" />
+          </div>
+          <div class="field">
+            <label for="start-time">Start time</label>
+            <div class="time-row">
+              <select id="start-time" name="start_hour" data-hour-select></select>
+              <select name="start_minute" data-minute-select></select>
+              <select name="start_period" data-period-select></select>
+            </div>
+          </div>
+        </div>
+        <div class="grid two">
+          <div class="field">
+            <label for="end-date">End date</label>
+            <input id="end-date" name="end_date" type="date" />
+          </div>
+          <div class="field">
+            <label for="end-time">End time</label>
+            <div class="time-row">
+              <select id="end-time" name="end_hour" data-hour-select></select>
+              <select name="end_minute" data-minute-select></select>
+              <select name="end_period" data-period-select></select>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="assigned-workers">Assigned workers</label>
+          <select id="assigned-workers" name="assigned_user_ids" data-workers-select multiple size="6"></select>
+        </div>
+        <div class="field">
+          <label for="status">Status</label>
+          <select id="status" name="status">
+            <option value="scheduled">scheduled</option>
+            <option value="draft">draft</option>
+            <option value="complete">complete</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </div>
         <div class="field">
           <label for="notes">Public notes</label>
           <textarea id="notes" name="public_notes"></textarea>
+        </div>
+        <div class="field">
+          <label for="internal-notes">Internal notes</label>
+          <textarea id="internal-notes" name="internal_notes"></textarea>
         </div>
         <button class="button" type="submit">Save job</button>
         <p class="form-status" data-form-status></p>
       </form>
     </section>
 
-      <section class="card">
-        <h2>Active Jobs</h2>
+    <section class="card">
+      <h2>Jobs</h2>
       <div class="empty-state" data-jobs-list>
         Loading jobs from D1.
       </div>
     </section>
+  </section>
+
+  <section class="card requires-supervisor" data-allowed="false" style="margin-top: 18px;">
+    <h2>Website Consultations</h2>
+    <div class="empty-state" data-consultations-list>
+      Loading consultation requests from CONSULT_DB.
+    </div>
   </section>
 </AppShell>

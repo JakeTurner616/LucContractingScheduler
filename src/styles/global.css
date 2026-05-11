@@ -357,6 +357,12 @@ h3 {
   resize: vertical;
 }
 
+.time-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .login-page {
   align-items: center;
   display: grid;
@@ -436,6 +442,54 @@ h3 {
   color: var(--good);
 }
 
+.calendar-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.calendar-day {
+  background: #fbfaf7;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-height: 126px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.calendar-grid.expanded .calendar-day {
+  min-height: 220px;
+  max-height: none;
+}
+
+.calendar-date {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+  margin-bottom: 8px;
+}
+
+.calendar-job {
+  background: var(--surface-strong);
+  border-radius: 6px;
+  color: #ffffff;
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1.25;
+  margin-top: 6px;
+  padding: 7px 8px;
+}
+
+.calendar-job span {
+  color: rgba(255, 255, 255, 0.72);
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 650;
+  margin-top: 3px;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     display: block;
@@ -479,6 +533,10 @@ h3 {
   }
 
   .list-item {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-grid {
     grid-template-columns: 1fr;
   }
 }

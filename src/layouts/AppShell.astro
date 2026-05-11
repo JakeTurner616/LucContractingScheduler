@@ -13,7 +13,7 @@ interface NavItem {
 
 interface Props {
   title: string;
-  active: "dashboard" | "schedule" | "jobs" | "workers" | "settings";
+  active: "dashboard" | "schedule" | "jobs" | "workers" | "feeds" | "settings";
   eyebrow?: string;
   heading: string;
   lede?: string;
@@ -24,8 +24,9 @@ const { title, active, eyebrow = "Scheduler", heading, lede } = Astro.props;
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: "grid", role: "all" },
   { href: "/schedule", label: "Schedule", icon: "calendar", role: "all" },
-  { href: "/jobs", label: "Jobs", icon: "briefcase", role: "supervisor" },
+  { href: "/jobs", label: "Jobs", icon: "briefcase", role: "all" },
   { href: "/workers", label: "Workers", icon: "users", role: "supervisor" },
+  { href: "/feeds", label: "Feeds", icon: "calendar", role: "all" },
   { href: "/settings", label: "Settings", icon: "settings", role: "supervisor" }
 ];
 
@@ -82,9 +83,6 @@ const icons = {
             <span data-user-label>Loading user</span>
           </div>
           <a class="button secondary" href="/login" data-login-action hidden>Sign in</a>
-          <form data-logout-form>
-            <button class="button secondary" type="submit">Sign out</button>
-          </form>
         </header>
 
         <div class="page">
@@ -111,6 +109,7 @@ const icons = {
       const logoutForm = document.querySelector("[data-logout-form]");
       const loginAction = document.querySelector("[data-login-action]");
       const sessionStorageKey = "luc_scheduler_session";
+      const calendarStorageKey = "luc_scheduler_calendar_expanded";
       let currentUser = null;
       let isAuthenticated = false;
 
@@ -202,7 +201,51 @@ const icons = {
           }
         });
 
+        form.querySelectorAll("select[multiple]").forEach((select) => {
+          body[select.name] = Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean);
+        });
+
+        if (form.id === "job-form") {
+          const scheduledStart = combineDateTimeParts(body.job_date, body.start_hour, body.start_minute, body.start_period);
+          const scheduledEnd = combineDateTimeParts(body.end_date || body.job_date, body.end_hour, body.end_minute, body.end_period);
+          delete body.job_date;
+          delete body.start_hour;
+          delete body.start_minute;
+          delete body.start_period;
+          delete body.end_date;
+          delete body.end_hour;
+          delete body.end_minute;
+          delete body.end_period;
+          if (scheduledStart) body.scheduled_start = scheduledStart;
+          if (scheduledEnd) body.scheduled_end = scheduledEnd;
+        }
+
         return body;
+      };
+
+      const to24HourTime = (hour, minute, period) => {
+        if (!hour || !minute || !period) return "";
+        let numericHour = Number(hour);
+        if (!Number.isInteger(numericHour) || numericHour < 1 || numericHour > 12) return "";
+        if (period === "AM" && numericHour === 12) numericHour = 0;
+        if (period === "PM" && numericHour !== 12) numericHour += 12;
+        return `${String(numericHour).padStart(2, "0")}:${minute}`;
+      };
+
+      const combineDateTimeParts = (date, hour, minute, period) => {
+        if (!date) return "";
+        const time = to24HourTime(hour, minute, period);
+        return time ? `${date}T${time}` : "";
+      };
+
+      const splitDateTime = (value) => {
+        if (!value) return { date: "", hour: "", minute: "00", period: "AM" };
+        const [date = "", rawTime = ""] = String(value).split("T");
+        const [rawHour = "09", rawMinute = "00"] = rawTime.split(":");
+        const hour24 = Number(rawHour);
+        const period = hour24 >= 12 ? "PM" : "AM";
+        const hour12 = hour24 % 12 || 12;
+        return { date, hour: String(hour12), minute: rawMinute.slice(0, 2), period };
       };
 
       const setStatus = (form, message, kind = "") => {
@@ -231,9 +274,63 @@ const icons = {
               <article class="list-item">
                 <div>
                   <div class="item-title">${escapeHtml(job.title)}</div>
-                  <p class="item-meta">${escapeHtml(job.location || "No location")} / ${escapeHtml(job.public_notes || "No public notes")}</p>
+                  <p class="item-meta">${escapeHtml(formatDateTime(job.scheduled_start) || "No date")} / ${escapeHtml(job.location || "No location")} / ${escapeHtml((job.assigned_user_names || []).join(", ") || "Unassigned")}</p>
                 </div>
-                <span class="badge">${escapeHtml(job.status)}</span>
+                ${currentUser?.role === "supervisor" && document.querySelector("#job-form")
+                  ? `<button class="button secondary" type="button" data-edit-job="${escapeHtml(encodeURIComponent(JSON.stringify(job)))}">Edit</button>`
+                  : `<span class="badge">${escapeHtml(job.status)}</span>`}
+              </article>
+            `).join("")}
+          </div>
+        `);
+      };
+
+      const fillJobForm = (job) => {
+        const form = document.querySelector("#job-form");
+        if (!(form instanceof HTMLFormElement)) return;
+
+        form.querySelector("[data-job-id]").value = job.id || "";
+        form.elements.title.value = job.title || "";
+        form.elements.location.value = job.location || "";
+        const start = splitDateTime(job.scheduled_start);
+        const end = splitDateTime(job.scheduled_end);
+        form.elements.job_date.value = start.date;
+        form.elements.start_hour.value = start.hour;
+        form.elements.start_minute.value = start.minute;
+        form.elements.start_period.value = start.period;
+        form.elements.end_date.value = end.date;
+        form.elements.end_hour.value = end.hour;
+        form.elements.end_minute.value = end.minute;
+        form.elements.end_period.value = end.period;
+        form.elements.status.value = job.status || "scheduled";
+        form.elements.public_notes.value = job.public_notes || "";
+        form.elements.internal_notes.value = job.internal_notes || "";
+
+        const assigned = new Set(job.assigned_user_ids || []);
+        Array.from(form.elements.assigned_user_ids?.options || []).forEach((option) => {
+          option.selected = assigned.has(option.value);
+        });
+
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+
+      const renderConsultations = (consultations) => {
+        if (!document.querySelector("[data-consultations-list]")) return;
+
+        if (!consultations.length) {
+          setListHtml("[data-consultations-list]", `<div class="empty-state" data-consultations-list>No consultation requests found.</div>`);
+          return;
+        }
+
+        setListHtml("[data-consultations-list]", `
+          <div class="list" data-consultations-list>
+            ${consultations.map((consult) => `
+              <article class="list-item">
+                <div>
+                  <div class="item-title">${escapeHtml(consult.name)} / ${escapeHtml(consult.service_type || "Consultation")}</div>
+                  <p class="item-meta">${escapeHtml(consult.preferred_date || "No date")} ${escapeHtml(consult.preferred_time || "")} / ${escapeHtml(consult.address || "No address")} / ${escapeHtml(consult.email)}</p>
+                </div>
+                <span class="badge">${escapeHtml(consult.status)}</span>
               </article>
             `).join("")}
           </div>
@@ -263,42 +360,71 @@ const icons = {
         `);
       };
 
-      const renderShifts = (shifts) => {
-        const supervisorList = document.querySelector("[data-shifts-list]");
-        const employeeList = document.querySelector("[data-employee-shifts-list]");
-        const targetSelector = supervisorList ? "[data-shifts-list]" : "[data-employee-shifts-list]";
-        const target = supervisorList || employeeList;
+      const renderCalendar = (jobs) => {
+        if (!document.querySelector("[data-calendar]")) return;
 
-        if (!target) return;
+        const today = new Date();
+        const start = new Date(today);
+        start.setDate(today.getDate() - today.getDay());
+        start.setHours(0, 0, 0, 0);
+        const expanded = sessionStorage.getItem(calendarStorageKey) === "true";
+        const days = Array.from({ length: expanded ? 35 : 14 }, (_, index) => {
+          const day = new Date(start);
+          day.setDate(start.getDate() + index);
+          return day;
+        });
 
-        if (!shifts.length) {
-          setListHtml(targetSelector, `<div class="empty-state" ${supervisorList ? "data-shifts-list" : "data-employee-shifts-list"}>No shifts are scheduled yet.</div>`);
-          return;
-        }
+        const jobDateKey = (job) => {
+          if (!job.scheduled_start) return "";
+          const date = new Date(job.scheduled_start);
+          return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+        };
 
-        const listHtml = `
-          <div class="list" ${supervisorList ? "data-shifts-list" : "data-employee-shifts-list"}>
-            ${shifts.map((shift) => `
-              <article class="list-item">
-                <div>
-                  <div class="item-title">${escapeHtml(formatDateTime(shift.starts_at))} / ${escapeHtml(shift.job_title)}</div>
-                  <p class="item-meta">${escapeHtml(shift.user_name || shift.user_email)} / ${escapeHtml(shift.job_location || "No location")}</p>
-                </div>
-                <span class="badge">${escapeHtml(shift.status)}</span>
-              </article>
-            `).join("")}
+        const html = `
+          <div class="calendar-grid ${expanded ? "expanded" : ""}" data-calendar>
+            ${days.map((day) => {
+              const key = day.toISOString().slice(0, 10);
+              const dayJobs = jobs.filter((job) => jobDateKey(job) === key);
+              return `
+                <section class="calendar-day">
+                  <div class="calendar-date">${escapeHtml(new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(day))}</div>
+                  ${dayJobs.map((job) => `
+                    <span class="calendar-job">${escapeHtml(job.title)}<span>${escapeHtml(formatDateTime(job.scheduled_start) || "No time")} / ${escapeHtml(job.location || "No location")}</span></span>
+                  `).join("")}
+                </section>
+              `;
+            }).join("")}
           </div>
         `;
 
-        setListHtml(targetSelector, listHtml);
+        setListHtml("[data-calendar]", html);
+      };
 
-        const todayTitle = document.querySelector("[data-today-shift-title]");
-        const todayMeta = document.querySelector("[data-today-shift-meta]");
-        if (todayTitle && todayMeta) {
-          const nextShift = shifts[0];
-          todayTitle.textContent = nextShift.job_title || "Scheduled shift";
-          todayMeta.textContent = `${formatDateTime(nextShift.starts_at)} / ${nextShift.job_location || "No location"} / ${nextShift.public_notes || "No public notes"}`;
+      const renderFeeds = (feeds) => {
+        if (!document.querySelector("[data-feeds-list]")) return;
+        if (!feeds.length) {
+          setListHtml("[data-feeds-list]", `<div class="empty-state" data-feeds-list>No feeds have been generated yet.</div>`);
+          return;
         }
+        setListHtml("[data-feeds-list]", `
+          <div class="list" data-feeds-list>
+            ${feeds.map((feed) => {
+              const feedUrl = `${window.location.origin}/ics/${feed.token}`;
+              return `
+                <article class="list-item">
+                  <div>
+                    <div class="item-title">${escapeHtml(feed.feed_type === "supervisor_all" ? "Supervisor all" : feed.user_name || feed.user_email || "Worker feed")}</div>
+                    <p class="item-meta">${escapeHtml(feedUrl)}</p>
+                  </div>
+                  <div class="button-row">
+                    <a class="button secondary" href="${escapeHtml(feedUrl)}" target="_blank" rel="noreferrer">Open</a>
+                    <button class="button secondary" type="button" data-copy-url="${escapeHtml(feedUrl)}">Copy</button>
+                  </div>
+                </article>
+              `;
+            }).join("")}
+          </div>
+        `);
       };
 
       const populateSelect = (selector, rows, getValue, getLabel, emptyLabel) => {
@@ -328,9 +454,19 @@ const icons = {
           populateSelect("[data-workers-select]", (users || []).filter((user) => user.active === 1), (user) => user.id, (user) => user.name || user.email, "No workers available");
         }
 
-        if (document.querySelector("[data-shifts-list]") || document.querySelector("[data-employee-shifts-list]")) {
-          const { shifts } = await apiFetch("/api/shifts");
-          renderShifts(shifts || []);
+        if (document.querySelector("[data-calendar]")) {
+          const { jobs } = await apiFetch("/api/jobs");
+          renderCalendar(jobs || []);
+        }
+
+        if (role === "supervisor" && document.querySelector("[data-consultations-list]")) {
+          const { consultations } = await apiFetch("/api/consultations");
+          renderConsultations(consultations || []);
+        }
+
+        if (document.querySelector("[data-feeds-list]")) {
+          const { feeds } = await apiFetch("/api/feeds");
+          renderFeeds(feeds || []);
         }
       };
 
@@ -349,17 +485,51 @@ const icons = {
             setStatus(form, "Saving...");
 
             try {
-              await apiFetch(`/api/${resource}`, {
-                method: "POST",
-                body: JSON.stringify(formToJson(form))
+              const body = formToJson(form);
+              const jobId = resource === "jobs" ? body.id : "";
+              delete body.id;
+
+              await apiFetch(jobId ? `/api/${resource}/${encodeURIComponent(jobId)}` : `/api/${resource}`, {
+                method: jobId ? "PUT" : "POST",
+                body: JSON.stringify(body)
               });
               form.reset();
+              form.querySelector("[data-job-id]")?.setAttribute("value", "");
               setStatus(form, "Saved.", "success");
               await loadSchedulerData(currentUser?.role || "employee");
             } catch (error) {
               setStatus(form, error instanceof Error ? error.message : "Save failed.", "error");
             }
           });
+        });
+      };
+
+      const populateTimeSelects = () => {
+        document.querySelectorAll("[data-hour-select]").forEach((select) => {
+          if (!(select instanceof HTMLSelectElement) || select.dataset.loaded === "true") return;
+          const options = select.name === "end_hour" ? ['<option value="">No end time</option>'] : [];
+          for (let hour = 1; hour <= 12; hour += 1) {
+            const selected = select.name === "start_hour" && hour === 9 ? " selected" : "";
+            options.push(`<option value="${hour}"${selected}>${hour}</option>`);
+          }
+          select.innerHTML = options.join("");
+          if (select.name === "start_hour") select.value = "9";
+          if (select.name === "end_hour") select.value = "";
+          select.dataset.loaded = "true";
+        });
+
+        document.querySelectorAll("[data-minute-select]").forEach((select) => {
+          if (!(select instanceof HTMLSelectElement) || select.dataset.loaded === "true") return;
+          select.innerHTML = ["00", "15", "30", "45"].map((minute) => `<option value="${minute}">${minute}</option>`).join("");
+          select.value = "00";
+          select.dataset.loaded = "true";
+        });
+
+        document.querySelectorAll("[data-period-select]").forEach((select) => {
+          if (!(select instanceof HTMLSelectElement) || select.dataset.loaded === "true") return;
+          select.innerHTML = ['<option value="AM">AM</option>', '<option value="PM">PM</option>'].join("");
+          select.value = "AM";
+          select.dataset.loaded = "true";
         });
       };
 
@@ -382,6 +552,9 @@ const icons = {
         } catch (error) {
           currentUser = null;
           isAuthenticated = false;
+          if (error?.status === 401) {
+            sessionStorage.removeItem(sessionStorageKey);
+          }
           applyRole("employee");
           if (loginAction) loginAction.hidden = false;
           if (logoutForm) logoutForm.hidden = true;
@@ -405,6 +578,42 @@ const icons = {
         }
       });
 
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-edit-job]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        try {
+          fillJobForm(JSON.parse(decodeURIComponent(button.dataset.editJob || "")));
+        } catch {
+          // Ignore malformed edit payloads.
+        }
+      });
+
+      document.addEventListener("click", async (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-copy-url]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        try {
+          await navigator.clipboard.writeText(button.dataset.copyUrl || "");
+          button.textContent = "Copied";
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+          }, 1600);
+        } catch {
+          button.textContent = "Copy failed";
+        }
+      });
+
+      document.addEventListener("click", async (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-calendar-toggle]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        const next = sessionStorage.getItem(calendarStorageKey) !== "true";
+        sessionStorage.setItem(calendarStorageKey, String(next));
+        button.textContent = next ? "Collapse calendar" : "Expand calendar";
+        await loadSchedulerData(currentUser?.role || "employee");
+      });
+
       const captureLocalSession = () => {
         const url = new URL(window.location.href);
         const session = url.searchParams.get("session");
@@ -417,6 +626,7 @@ const icons = {
         window.history.replaceState({}, "", url.toString());
       };
 
+      populateTimeSelects();
       bindApiForms();
       captureLocalSession();
       loadSession();

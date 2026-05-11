@@ -1,6 +1,6 @@
 # Luc Contracting Scheduler
 
-Static Astro frontend for the internal scheduler app.
+Internal job scheduling app for Luc Contracting.
 
 ## Commands
 
@@ -10,26 +10,26 @@ npm run dev
 npm run build
 ```
 
-The frontend talks to the Cloudflare Worker at:
+## Domain Changes
+
+When moving between local, staging, or production domains, update:
+
+- `src/lib/config.ts`: frontend API origin
+- `astro.config.mjs`: local dev proxy target for calendar feeds
+- GitHub repository variables: `PUBLIC_API_ORIGIN` and `PUBLIC_SITE_URL`
+- Worker environment: app origin and frontend origin
+- Google OAuth redirect URI: `/auth/google/callback` on the active Worker/app origin
+- Production routing: forward `/ics/*` on the frontend domain to the Worker calendar feed route
+
+Calendar feed links should stay on the frontend domain when possible, for example:
 
 ```text
-https://luc-contracting-scheduler-worker.jake-3c8.workers.dev
+https://scheduler.example.com/ics/<token>
 ```
 
-## Worker
+## Deployment Notes
 
-The scheduler Worker source lives in `worker/scheduler-worker.js`.
-
-The D1 schema for the expected MVP tables lives in `worker/schema.sql`.
-
-Required Worker bindings and vars:
-
-```text
-SCHEDULER_DB
-APP_ORIGIN=https://luc-contracting-scheduler-worker.jake-3c8.workers.dev
-FRONTEND_ORIGIN=http://localhost:4325
-GOOGLE_OAUTH_ID
-GOOGLE_OAUTH_SECRET
-SESSION_SECRET
-RESEND_API_KEY
-```
+- GitHub Pages deploys from `.github/workflows/deploy-pages.yml` on pushes to `main`.
+- Keep secrets, local vars, database exports, and generated builds out of git.
+- Verify the configured sender domain before enabling email notifications.
+- Apply database schema or migrations through the deployment environment, not from public documentation.

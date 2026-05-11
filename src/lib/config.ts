@@ -1,1 +1,1 @@
-export const API_ORIGIN = "https://luc-contracting-scheduler-worker.jake-3c8.workers.dev";
+export const API_ORIGIN = import.meta.env.PUBLIC_API_ORIGIN || "";

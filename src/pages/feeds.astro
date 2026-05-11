@@ -1,0 +1,42 @@
+---
+import AppShell from "../layouts/AppShell.astro";
+---
+
+<AppShell
+  title="ICS Feeds"
+  active="feeds"
+  heading="ICS Feeds"
+  lede="Read-only calendar feed links for supervisors and workers."
+>
+  <div slot="actions" class="button-row requires-supervisor" data-allowed="false">
+    <button class="button" type="submit" form="feed-form">Generate feed</button>
+  </div>
+
+  <section class="grid two">
+    <section class="card requires-supervisor" data-allowed="false">
+      <h2>Generate Feed</h2>
+      <form id="feed-form" class="form-grid" data-api-form="feeds">
+        <div class="field">
+          <label for="feed-type">Feed type</label>
+          <select id="feed-type" name="feed_type">
+            <option value="worker">worker</option>
+            <option value="supervisor_all">supervisor_all</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="feed-worker">Worker</label>
+          <select id="feed-worker" name="user_id" data-workers-select></select>
+        </div>
+        <button class="button" type="submit">Generate feed</button>
+        <p class="form-status" data-form-status></p>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Feed Links</h2>
+      <div class="empty-state" data-feeds-list>
+        Loading feed links.
+      </div>
+    </section>
+  </section>
+</AppShell>
