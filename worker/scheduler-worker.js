@@ -159,7 +159,7 @@ async function finishGoogleAuth(request, env, url) {
   await env.SCHEDULER_DB.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").bind(allowedUser.id).run();
   const session = await createSession(env, allowedUser);
   const redirectUrl = new URL(returnTo);
-  if (redirectUrl.hostname === "localhost" || redirectUrl.hostname === "127.0.0.1") redirectUrl.searchParams.set("session", session);
+  if (shouldPassSessionInRedirect(redirectUrl, env)) redirectUrl.searchParams.set("session", session);
 
   return new Response(null, {
     status: 302,
@@ -595,6 +595,11 @@ function getSafeReturnTo(value, env) {
   } catch {
     return fallback;
   }
+}
+
+function shouldPassSessionInRedirect(url, env) {
+  const allowedOrigins = new Set([DEFAULT_FRONTEND_ORIGIN, env.FRONTEND_ORIGIN].filter(Boolean));
+  return allowedOrigins.has(url.origin);
 }
 
 function cookie(name, value, options = {}) {

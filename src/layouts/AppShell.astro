@@ -167,7 +167,7 @@ const icons = {
 
       const apiFetch = async (path, options = {}) => {
         const localSession = sessionStorage.getItem(sessionStorageKey);
-        setText(localAuthStatus, localSession ? "Local dev token captured" : "No local dev token");
+        setText(localAuthStatus, localSession ? "Browser session captured" : "No browser session token");
         const response = await fetch(`${apiOrigin}${path}`, {
           credentials: "include",
           headers: {
@@ -617,11 +617,11 @@ const icons = {
       const captureLocalSession = () => {
         const url = new URL(window.location.href);
         const session = url.searchParams.get("session");
-        setText(localAuthStatus, sessionStorage.getItem(sessionStorageKey) ? "Local dev token captured" : "No local dev token");
+        setText(localAuthStatus, sessionStorage.getItem(sessionStorageKey) ? "Browser session captured" : "No browser session token");
         if (!session) return;
 
         sessionStorage.setItem(sessionStorageKey, session);
-        setText(localAuthStatus, "Local dev token captured");
+        setText(localAuthStatus, "Browser session captured");
         url.searchParams.delete("session");
         window.history.replaceState({}, "", url.toString());
       };
