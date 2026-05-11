@@ -409,7 +409,7 @@ const icons = {
         setListHtml("[data-feeds-list]", `
           <div class="list" data-feeds-list>
             ${feeds.map((feed) => {
-              const feedUrl = `${window.location.origin}/ics/${feed.token}`;
+              const feedUrl = `${apiOrigin}/ics/${encodeURIComponent(feed.token)}`;
               return `
                 <article class="list-item">
                   <div>
