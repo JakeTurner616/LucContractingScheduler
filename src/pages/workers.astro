@@ -1,0 +1,46 @@
+---
+import AppShell from "../layouts/AppShell.astro";
+---
+
+<AppShell
+  title="Workers"
+  active="workers"
+  heading="Workers"
+  lede="Manage employees, supervisor access, active status, and calendar feed state."
+>
+  <div slot="actions" class="button-row">
+    <button class="button" type="submit" form="worker-form">Add employee</button>
+  </div>
+
+  <section class="grid two">
+    <section class="card">
+      <h2>Add Worker</h2>
+      <form id="worker-form" class="form-grid" data-api-form="users">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" placeholder="name@example.com" />
+        </div>
+        <div class="field">
+          <label for="worker-name">Name</label>
+          <input id="worker-name" name="name" />
+        </div>
+        <div class="field">
+          <label for="role">Role</label>
+          <select id="role" name="role">
+            <option>employee</option>
+            <option>supervisor</option>
+          </select>
+        </div>
+        <button class="button" type="submit">Save worker</button>
+        <p class="form-status" data-form-status></p>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Workers</h2>
+      <div class="empty-state" data-users-list>
+        Loading approved users from D1.
+      </div>
+    </section>
+  </section>
+</AppShell>

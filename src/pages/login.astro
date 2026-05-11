@@ -1,0 +1,46 @@
+---
+import "../styles/global.css";
+import { API_ORIGIN } from "../lib/config";
+
+const loginUrl = `${API_ORIGIN}/auth/google/start`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Sign In | Luc Contracting Scheduler</title>
+  </head>
+  <body>
+    <main class="login-page">
+      <section class="login-card" aria-labelledby="login-title">
+        <div class="login-mark">LC</div>
+        <p class="eyebrow">Internal scheduler</p>
+        <h1 id="login-title">Sign in to Luc Contracting</h1>
+        <p class="lede">Use your approved Google account to view schedules, jobs, and worker assignments.</p>
+        <div class="button-row" style="margin-top: 26px;">
+          <a class="button google" href={loginUrl} data-login-link>Sign in with Google</a>
+        </div>
+      </section>
+    </main>
+    <script>
+      const sessionStorageKey = "luc_scheduler_session";
+      const currentUrl = new URL(window.location.href);
+      const session = currentUrl.searchParams.get("session");
+
+      if (session) {
+        sessionStorage.setItem(sessionStorageKey, session);
+        window.location.replace(`${window.location.origin}/dashboard`);
+      }
+
+      const loginLink = document.querySelector("[data-login-link]");
+      if (loginLink instanceof HTMLAnchorElement) {
+        const loginUrl = new URL(loginLink.href);
+        loginUrl.searchParams.set("return_to", `${window.location.origin}/dashboard`);
+        loginLink.href = loginUrl.toString();
+      }
+    </script>
+  </body>
+</html>

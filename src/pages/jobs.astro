@@ -1,0 +1,43 @@
+---
+import AppShell from "../layouts/AppShell.astro";
+---
+
+<AppShell
+  title="Jobs"
+  active="jobs"
+  heading="Jobs"
+  lede="Create, edit, and review job details before they appear on assigned shifts."
+>
+  <div slot="actions" class="button-row">
+    <button class="button" type="submit" form="job-form">Create job</button>
+  </div>
+
+  <section class="grid two">
+    <section class="card">
+      <h2>Job Details</h2>
+      <form id="job-form" class="form-grid" data-api-form="jobs">
+        <div class="field">
+          <label for="title">Job name</label>
+          <input id="title" name="title" required />
+        </div>
+        <div class="field">
+          <label for="location">Location</label>
+          <input id="location" name="location" />
+        </div>
+        <div class="field">
+          <label for="notes">Public notes</label>
+          <textarea id="notes" name="public_notes"></textarea>
+        </div>
+        <button class="button" type="submit">Save job</button>
+        <p class="form-status" data-form-status></p>
+      </form>
+    </section>
+
+      <section class="card">
+        <h2>Active Jobs</h2>
+      <div class="empty-state" data-jobs-list>
+        Loading jobs from D1.
+      </div>
+    </section>
+  </section>
+</AppShell>

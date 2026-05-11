@@ -1,0 +1,73 @@
+---
+import AppShell from "../layouts/AppShell.astro";
+---
+
+<AppShell
+  title="Schedule"
+  active="schedule"
+  heading="Schedule"
+  lede="Week view for supervisors and a focused shift list for employees."
+>
+  <div slot="actions" class="button-row requires-supervisor" data-allowed="false">
+    <button class="button" type="submit" form="shift-form">Create shift</button>
+  </div>
+
+  <section class="requires-supervisor" data-allowed="false">
+    <div class="grid two">
+      <section class="card">
+        <h2>Create Shift</h2>
+        <form id="shift-form" class="form-grid" data-api-form="shifts">
+          <div class="field">
+            <label for="job">Job</label>
+            <select id="job" name="job_id" data-jobs-select required>
+              <option>No jobs loaded yet</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="worker">Employee</label>
+            <select id="worker" name="user_id" data-workers-select required>
+              <option>No workers loaded yet</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="starts">Starts</label>
+            <input id="starts" name="starts_at" type="datetime-local" required />
+          </div>
+          <div class="field">
+            <label for="ends">Ends</label>
+            <input id="ends" name="ends_at" type="datetime-local" />
+          </div>
+          <div class="field">
+            <label for="public-notes">Public notes</label>
+            <textarea id="public-notes" name="public_notes"></textarea>
+          </div>
+          <button class="button" type="submit">Save shift</button>
+          <p class="form-status" data-form-status></p>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Week List</h2>
+        <div class="empty-state" data-shifts-list>
+          Loading shifts from D1.
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section class="requires-employee" data-allowed="true">
+    <div class="grid">
+      <article class="card">
+        <p class="eyebrow">Today&apos;s shift</p>
+        <h2 data-today-shift-title>No shift data loaded</h2>
+        <p class="lede" data-today-shift-meta>Your assigned shift details will appear here after the schedule endpoint is connected.</p>
+      </article>
+      <article class="card">
+        <h2>Upcoming Shifts</h2>
+        <div class="empty-state" data-employee-shifts-list>
+          Loading your shifts from D1.
+        </div>
+      </article>
+    </div>
+  </section>
+</AppShell>

@@ -1,0 +1,72 @@
+---
+import AppShell from "../layouts/AppShell.astro";
+---
+
+<AppShell
+  title="Dashboard"
+  active="dashboard"
+  heading="Dashboard"
+  lede="The day at a glance: assigned work, schedule movement, and reminders that need attention."
+>
+  <div slot="actions" class="button-row requires-supervisor" data-allowed="false">
+    <a class="button" href="/schedule">Create shift</a>
+    <a class="button secondary" href="/jobs">Create job</a>
+  </div>
+
+  <section class="role-panel" data-panel-role="supervisor" data-visible="false">
+    <div class="grid three">
+      <article class="card stat">
+        <div>
+          <p class="stat-label">Today&apos;s shifts</p>
+          <div class="stat-number">--</div>
+        </div>
+        <span class="badge">Pending API</span>
+      </article>
+      <article class="card stat">
+        <div>
+          <p class="stat-label">Upcoming jobs</p>
+          <div class="stat-number">--</div>
+        </div>
+        <span class="badge">Pending API</span>
+      </article>
+      <article class="card stat">
+        <div>
+          <p class="stat-label">Recent changes</p>
+          <div class="stat-number">--</div>
+        </div>
+        <span class="badge">Pending API</span>
+      </article>
+    </div>
+
+    <div class="grid two" style="margin-top: 18px;">
+      <section class="card">
+        <h2>Today&apos;s Shifts</h2>
+        <div class="empty-state">
+          Shifts will appear here after the Worker exposes schedule data.
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Recent Changes</h2>
+        <div class="empty-state">
+          Change history will appear here after notification and audit data are connected.
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section class="role-panel" data-panel-role="employee" data-visible="true">
+    <div class="grid two">
+      <section class="card">
+        <p class="eyebrow">Today</p>
+        <h2>No shift data loaded</h2>
+        <p class="lede">Your next shift will appear here after the Worker exposes schedule data.</p>
+      </section>
+      <section class="card">
+        <p class="eyebrow">Calendar</p>
+        <h2>Subscription feed</h2>
+        <p class="lede">Your read-only schedule feed will appear here after feeds are enabled.</p>
+      </section>
+    </div>
+  </section>
+</AppShell>
