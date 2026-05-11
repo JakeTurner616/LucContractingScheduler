@@ -30,11 +30,17 @@ jobs:
 
       - name: Validate deploy config
         run: |
-          test -n "${PUBLIC_API_ORIGIN}"
-          test -n "${PUBLIC_SITE_URL}"
+          if [ -z "${PUBLIC_API_ORIGIN}" ]; then
+            echo "PUBLIC_API_ORIGIN is required. Add it in GitHub repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if [ -z "${PUBLIC_SITE_URL}" ]; then
+            echo "PUBLIC_SITE_URL is required. Add it in GitHub repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
         env:
-          PUBLIC_API_ORIGIN: ${{ vars.PUBLIC_API_ORIGIN }}
-          PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL }}
+          PUBLIC_API_ORIGIN: ${{ vars.PUBLIC_API_ORIGIN || secrets.PUBLIC_API_ORIGIN }}
+          PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL || secrets.PUBLIC_SITE_URL }}
 
       - name: Install dependencies
         run: npm ci
@@ -42,8 +48,8 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          PUBLIC_API_ORIGIN: ${{ vars.PUBLIC_API_ORIGIN }}
-          PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL }}
+          PUBLIC_API_ORIGIN: ${{ vars.PUBLIC_API_ORIGIN || secrets.PUBLIC_API_ORIGIN }}
+          PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL || secrets.PUBLIC_SITE_URL }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
