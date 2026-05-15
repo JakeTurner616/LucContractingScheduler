@@ -16,10 +16,12 @@ export default {
         return new Response(null, { headers: corsHeaders(request, env) });
       }
 
-      if (url.pathname === "/" || url.pathname === "/login") return workerLoginPage();
+      if (url.pathname === "/" || url.pathname === "/login") return workerLoginPage(request, env);
+      if (url.pathname === "/auth/dev/session" && request.method === "POST") return createDevSessionResponse(request, env);
+      if (url.pathname === "/auth/dev/start") return startDevAuthRequest(request, env, url);
       if (url.pathname === "/auth/google/start") return startGoogleAuth(env, url);
       if (url.pathname === "/auth/google/callback") return finishGoogleAuth(request, env, url);
-      if (url.pathname === "/auth/logout" && request.method === "POST") return json(request, env, { ok: true }, { headers: [["Set-Cookie", clearCookie(SESSION_COOKIE)]] });
+      if (url.pathname === "/auth/logout" && request.method === "POST") return json(request, env, { ok: true }, { headers: [["Set-Cookie", clearCookie(SESSION_COOKIE, "/", env)]] });
       if (url.pathname.startsWith("/ics/") && request.method === "GET") {
         try {
           return await renderIcsFeed(env, url.pathname.slice("/ics/".length));
@@ -82,14 +84,71 @@ export default {
   },
 };
 
-function workerLoginPage() {
+function workerLoginPage(request, env) {
+  const useDevAuth = isDevAuthAllowed(request, env);
+  const authHref = useDevAuth ? "/auth/dev/start" : "/auth/google/start";
+  const authLabel = useDevAuth ? "Continue as local dev user" : "Sign in with Google";
+
   return html(`
     <main style="font-family:system-ui;padding:40px;max-width:640px;margin:auto">
       <h1>Luc Contracting Scheduler</h1>
       <p>Internal scheduling dashboard.</p>
-      <a href="/auth/google/start"><button style="font:inherit;padding:12px 18px;cursor:pointer">Sign in with Google</button></a>
+      <a href="${authHref}"><button style="font:inherit;padding:12px 18px;cursor:pointer">${escapeHtml(authLabel)}</button></a>
     </main>
   `);
+}
+
+async function startDevAuthRequest(request, env, url) {
+  if (!isDevAuthAllowed(request, env)) throw new HttpError(404, "Not found");
+  return startDevAuth(env, url);
+}
+
+async function startDevAuth(env, url) {
+  const { session } = await createDevSession(env);
+  const redirectUrl = new URL(getSafeReturnTo(url.searchParams.get("return_to"), env));
+  if (shouldPassSessionInRedirect(redirectUrl, env)) redirectUrl.searchParams.set("session", session);
+
+  return new Response(null, {
+    status: 302,
+    headers: [
+      ["Location", redirectUrl.toString()],
+      ["Set-Cookie", devSessionCookie(SESSION_COOKIE, session, { path: "/", maxAge: SESSION_MAX_AGE }, env)],
+      ...clearOauthCookiePairs(),
+    ],
+  });
+}
+
+async function createDevSessionResponse(request, env) {
+  if (!isDevAuthAllowed(request, env)) throw new HttpError(404, "Not found");
+  const { session, user } = await createDevSession(env);
+  return json(request, env, { session, user }, {
+    headers: [["Set-Cookie", devSessionCookie(SESSION_COOKIE, session, { path: "/", maxAge: SESSION_MAX_AGE }, env)]],
+  });
+}
+
+async function createDevSession(env) {
+  requireBinding(env.SCHEDULER_DB, "SCHEDULER_DB");
+
+  const user = await ensureDevUser(env);
+  await env.SCHEDULER_DB.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").bind(user.id).run();
+
+  return { session: await createSession(env, user), user };
+}
+
+async function ensureDevUser(env) {
+  const id = env.DEV_AUTH_USER_ID || "local-dev-supervisor";
+  const email = env.DEV_AUTH_EMAIL || "dev@localhost";
+  const name = env.DEV_AUTH_NAME || "Local Dev";
+  const role = env.DEV_AUTH_ROLE === "employee" ? "employee" : "supervisor";
+  const existing = await env.SCHEDULER_DB.prepare("SELECT id FROM users WHERE id = ? OR lower(email) = lower(?) LIMIT 1").bind(id, email).first();
+
+  if (existing?.id) {
+    await env.SCHEDULER_DB.prepare("UPDATE users SET email = ?, name = ?, role = ?, active = 1 WHERE id = ?").bind(email, name, role, existing.id).run();
+    return env.SCHEDULER_DB.prepare("SELECT id, email, name, role, active FROM users WHERE id = ? LIMIT 1").bind(existing.id).first();
+  }
+
+  await env.SCHEDULER_DB.prepare("INSERT INTO users (id, email, name, role, active) VALUES (?, ?, ?, ?, 1)").bind(id, email, name, role).run();
+  return env.SCHEDULER_DB.prepare("SELECT id, email, name, role, active FROM users WHERE id = ? LIMIT 1").bind(id).first();
 }
 
 async function startGoogleAuth(env, url) {
@@ -270,13 +329,19 @@ async function createUser(request, env) {
 
 async function listConsultations(request, env) {
   if (!env.CONSULT_DB) return json(request, env, { consultations: [] });
-  const rows = await env.CONSULT_DB.prepare(`
-    SELECT id, created_at, name, email, phone, service_type, preferred_date, preferred_time, address, message, status, source
-    FROM schedule_requests
-    ORDER BY created_at DESC
-    LIMIT 100
-  `).all();
-  return json(request, env, { consultations: rows.results ?? [] });
+
+  try {
+    const rows = await env.CONSULT_DB.prepare(`
+      SELECT id, created_at, name, email, phone, service_type, preferred_date, preferred_time, address, message, status, source
+      FROM schedule_requests
+      ORDER BY created_at DESC
+      LIMIT 100
+    `).all();
+    return json(request, env, { consultations: rows.results ?? [] });
+  } catch (error) {
+    if (isMissingD1TableError(error)) return json(request, env, { consultations: [] });
+    throw error;
+  }
 }
 
 async function listFeeds(request, env, user) {
@@ -379,6 +444,8 @@ async function notifyAssignedWorkers(env, jobId, action) {
 
   const recipients = rows.results ?? [];
 
+  if (areEmailNotificationsDisabled(env)) return;
+
   if (!env.RESEND_API_KEY) {
     for (const row of recipients) {
       await logNotification(env, jobId, row.user_id, row.email, "skipped", "RESEND_API_KEY is not configured");
@@ -409,6 +476,10 @@ async function notifyAssignedWorkers(env, jobId, action) {
       await logNotification(env, jobId, row.user_id, row.email, "failed", error instanceof Error ? error.message : "Unknown error");
     }
   }
+}
+
+function areEmailNotificationsDisabled(env) {
+  return env.SCHEDULER_AUTH_MODE === "dev";
 }
 
 function getResendFrom(env) {
@@ -451,6 +522,22 @@ function formatEmailDate(value) {
 
 function getFrontendOrigin(env) {
   return env.FRONTEND_ORIGIN || DEFAULT_FRONTEND_ORIGIN;
+}
+
+function isDevAuthAllowed(request, env) {
+  if (env.SCHEDULER_AUTH_MODE !== "dev") return false;
+  const requestUrl = new URL(request.url);
+  return isLocalHostname(requestUrl.hostname);
+}
+
+function isLocalHostname(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function requireBinding(binding, name) {
+  if (!binding) {
+    throw new HttpError(500, `${name} binding is not configured. Start the local Worker with Wrangler D1 bindings before using the scheduler API.`);
+  }
 }
 
 async function logNotification(env, jobId, userId, email, status, error) {
@@ -544,7 +631,7 @@ function corsHeaders(request, env) {
     "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization",
     "Vary": "Origin",
   });
-  if (origin && allowedOrigins.has(origin)) headers.set("Access-Control-Allow-Origin", origin);
+  if (origin && (allowedOrigins.has(origin) || isDevLocalOrigin(origin, env))) headers.set("Access-Control-Allow-Origin", origin);
   return headers;
 }
 
@@ -569,6 +656,11 @@ function errorResponse(request, env, error) {
   });
 }
 
+function isMissingD1TableError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /no such table/i.test(message);
+}
+
 function randomState() {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -586,20 +678,32 @@ function getBearerToken(request) {
 }
 
 function getSafeReturnTo(value, env) {
-  const fallback = `${DEFAULT_FRONTEND_ORIGIN}/dashboard`;
+  const fallback = `${getFrontendOrigin(env)}/dashboard`;
   if (!value) return fallback;
   try {
-    const returnUrl = new URL(value);
-    const allowedOrigins = new Set([DEFAULT_FRONTEND_ORIGIN, env.FRONTEND_ORIGIN].filter(Boolean));
-    return allowedOrigins.has(returnUrl.origin) ? returnUrl.toString() : fallback;
+    const returnUrl = new URL(value, fallback);
+    return isAllowedFrontendOrigin(returnUrl.origin, env) ? returnUrl.toString() : fallback;
   } catch {
     return fallback;
   }
 }
 
 function shouldPassSessionInRedirect(url, env) {
+  return isAllowedFrontendOrigin(url.origin, env);
+}
+
+function isAllowedFrontendOrigin(origin, env) {
   const allowedOrigins = new Set([DEFAULT_FRONTEND_ORIGIN, env.FRONTEND_ORIGIN].filter(Boolean));
-  return allowedOrigins.has(url.origin);
+  return allowedOrigins.has(origin) || isDevLocalOrigin(origin, env);
+}
+
+function isDevLocalOrigin(origin, env) {
+  if (env.SCHEDULER_AUTH_MODE !== "dev") return false;
+  try {
+    return isLocalHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function cookie(name, value, options = {}) {
@@ -608,8 +712,15 @@ function cookie(name, value, options = {}) {
   return parts.join("; ");
 }
 
-function clearCookie(name, path = "/") {
-  return cookie(name, "", { path, maxAge: 0, sameSite: "None" });
+function devSessionCookie(name, value, options = {}, env) {
+  if (env.SCHEDULER_AUTH_MODE !== "dev") return cookie(name, value, options);
+  const parts = [`${name}=${value}`, "HttpOnly", `SameSite=${options.sameSite || "Lax"}`, `Path=${options.path || "/"}`];
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
+  return parts.join("; ");
+}
+
+function clearCookie(name, path = "/", env) {
+  return devSessionCookie(name, "", { path, maxAge: 0, sameSite: "None" }, env);
 }
 
 function clearOauthCookiePairs() {

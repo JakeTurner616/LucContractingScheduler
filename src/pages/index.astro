@@ -8,9 +8,10 @@
   </head>
   <body>
     <script>
-      const target = new URL("/dashboard", window.location.origin);
       const current = new URL(window.location.href);
       const session = current.searchParams.get("session");
+      const storedSession = sessionStorage.getItem("luc_scheduler_session");
+      const target = new URL(session || storedSession ? "/dashboard" : "/login", window.location.origin);
 
       if (session) {
         target.searchParams.set("session", session);

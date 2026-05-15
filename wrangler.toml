@@ -1,0 +1,13 @@
+name = "luc-contracting-scheduler-worker"
+main = "worker/scheduler-worker.js"
+compatibility_date = "2026-05-01"
+
+[[d1_databases]]
+binding = "SCHEDULER_DB"
+database_name = "luc-contracting-scheduler-db"
+database_id = "7f54aa4f-6af6-46fb-a3db-583158dbe8d2"
+
+[[d1_databases]]
+binding = "CONSULT_DB"
+database_name = "luc-contracting-db"
+database_id = "42c2b876-bed7-43a5-b183-2ea70047e7e4"

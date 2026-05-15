@@ -2,7 +2,13 @@
 import "../styles/global.css";
 import { API_ORIGIN } from "../lib/config";
 
+const isLocalDev = import.meta.env.DEV;
 const loginUrl = `${API_ORIGIN}/auth/google/start`;
+const buttonHref = isLocalDev ? "/dashboard" : loginUrl;
+const loginLabel = isLocalDev ? "Continue as Local Dev" : "Sign in with Google";
+const loginHelp = isLocalDev
+  ? "Local development signs into the local D1 scheduler database without Google OAuth."
+  : "Use your approved Google account to view schedules, jobs, and worker assignments.";
 ---
 
 <!doctype html>
@@ -19,9 +25,17 @@ const loginUrl = `${API_ORIGIN}/auth/google/start`;
         <div class="login-mark">LC</div>
         <p class="eyebrow">Internal scheduler</p>
         <h1 id="login-title">Sign in to Luc Contracting</h1>
-        <p class="lede">Use your approved Google account to view schedules, jobs, and worker assignments.</p>
+        <p class="lede">{loginHelp}</p>
         <div class="button-row" style="margin-top: 26px;">
-          <a class="button google" href={loginUrl} data-login-link>Sign in with Google</a>
+          <a
+            class="button google"
+            href={buttonHref}
+            data-login-link
+            data-api-origin={API_ORIGIN}
+            data-dev-login={isLocalDev ? "true" : "false"}
+          >
+            {loginLabel}
+          </a>
         </div>
       </section>
     </main>
@@ -37,9 +51,38 @@ const loginUrl = `${API_ORIGIN}/auth/google/start`;
 
       const loginLink = document.querySelector("[data-login-link]");
       if (loginLink instanceof HTMLAnchorElement) {
-        const loginUrl = new URL(loginLink.href);
-        loginUrl.searchParams.set("return_to", `${window.location.origin}/dashboard`);
-        loginLink.href = loginUrl.toString();
+        const safeReturnTo = () => {
+          try {
+            const next = new URL(currentUrl.searchParams.get("return_to") || "/dashboard", window.location.origin);
+            return next.origin === window.location.origin ? `${next.pathname}${next.search}${next.hash}` : "/dashboard";
+          } catch {
+            return "/dashboard";
+          }
+        };
+
+        const isDevLogin = loginLink.dataset.devLogin === "true";
+        if (isDevLogin) {
+          loginLink.href = safeReturnTo();
+          loginLink.addEventListener("click", async (event) => {
+            event.preventDefault();
+            const apiOrigin = loginLink.dataset.apiOrigin || "";
+            const response = await fetch(`${apiOrigin}/auth/dev/session`, {
+              method: "POST",
+              credentials: "include",
+            });
+            if (!response.ok) {
+              window.location.href = "/login";
+              return;
+            }
+            const data = await response.json();
+            if (data.session) sessionStorage.setItem(sessionStorageKey, data.session);
+            window.location.href = safeReturnTo();
+          });
+        } else {
+          const loginUrl = new URL(loginLink.href);
+          loginUrl.searchParams.set("return_to", new URL(safeReturnTo(), window.location.origin).toString());
+          loginLink.href = loginUrl.toString();
+        }
       }
     </script>
   </body>
