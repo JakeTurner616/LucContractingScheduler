@@ -2,6 +2,11 @@ name = "luc-contracting-scheduler-worker"
 main = "worker/scheduler-worker.js"
 compatibility_date = "2026-05-01"
 
+[vars]
+APP_ORIGIN = "https://luc-contracting-scheduler-worker.jake-3c8.workers.dev"
+# Replace this with the final GitHub Pages URL if it differs from the Actions PUBLIC_SITE_URL.
+FRONTEND_ORIGIN = "https://scheduler.serverboi.org"
+
 [[d1_databases]]
 binding = "SCHEDULER_DB"
 database_name = "luc-contracting-scheduler-db"
