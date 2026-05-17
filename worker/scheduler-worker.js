@@ -64,12 +64,21 @@ export default {
         }
       }
 
-      if (url.pathname === "/api/users") {
+      const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+      if (url.pathname === "/api/users" || userMatch) {
         const user = await requireUser(request, env);
-        if (request.method === "GET") return listUsers(request, env, user);
-        if (request.method === "POST") {
+        if (request.method === "GET" && !userMatch) return listUsers(request, env, user);
+        if (request.method === "POST" && !userMatch) {
           requireSupervisor(user);
           return createUser(request, env);
+        }
+        if (request.method === "PUT" && userMatch) {
+          requireSupervisor(user);
+          return updateUser(request, env, user, userMatch[1]);
+        }
+        if (request.method === "DELETE" && userMatch) {
+          requireSupervisor(user);
+          return deleteUser(request, env, user, userMatch[1]);
         }
       }
 
@@ -85,6 +94,21 @@ export default {
           requireSupervisor(user);
           return createFeed(request, env);
         }
+      }
+
+      if (url.pathname === "/api/admin/database/stats" && request.method === "GET") {
+        requireSupervisor(await requireUser(request, env));
+        return databaseStats(request, env);
+      }
+
+      if (url.pathname === "/api/admin/database/export" && request.method === "GET") {
+        requireSupervisor(await requireUser(request, env));
+        return exportDatabaseRows(request, env, url);
+      }
+
+      if (url.pathname === "/api/admin/database/purge" && request.method === "POST") {
+        requireSupervisor(await requireUser(request, env));
+        return purgeDatabaseRows(request, env);
       }
 
       return json(request, env, { error: "Not found" }, { status: 404 });
@@ -333,7 +357,7 @@ async function saveCompletionDocument(request, env, user, jobId) {
   const customerName = stringField(body.customer_name, "customer_name");
   const signatureName = nullableString(body.signature_name) || customerName;
   const signatureDataUrl = stringField(body.signature_data_url, "signature_data_url");
-  if (!signatureDataUrl.startsWith("data:image/png;base64,") || signatureDataUrl.length < 300) {
+  if (!isValidDocumentImageDataUrl(signatureDataUrl) || signatureDataUrl.length < 300) {
     throw new HttpError(400, "Customer signature is required before completing the job.");
   }
 
@@ -414,11 +438,66 @@ async function createUser(request, env) {
   const email = stringField(body.email, "email").toLowerCase();
   const name = nullableString(body.name);
   const role = enumField(body.role ?? "employee", "role", ["employee", "supervisor"]);
-  const active = body.active === false || body.active === 0 ? 0 : 1;
+  const active = body.active === false || body.active === 0 || body.active === "0" ? 0 : 1;
   const id = crypto.randomUUID();
   await env.SCHEDULER_DB.prepare("INSERT INTO users (id, email, name, role, active) VALUES (?, ?, ?, ?, ?)").bind(id, email, name, role, active).run();
   const user = await env.SCHEDULER_DB.prepare("SELECT id, email, name, role, active, created_at, last_login_at FROM users WHERE id = ?").bind(id).first();
   return json(request, env, { user }, { status: 201 });
+}
+
+async function updateUser(request, env, currentUser, id) {
+  const existing = await env.SCHEDULER_DB.prepare("SELECT id, role, active FROM users WHERE id = ? LIMIT 1").bind(id).first();
+  if (!existing) throw new HttpError(404, "Worker not found");
+
+  const body = await readJson(request);
+  const email = stringField(body.email, "email").toLowerCase();
+  const name = nullableString(body.name);
+  const role = enumField(body.role ?? "employee", "role", ["employee", "supervisor"]);
+  const active = body.active === false || body.active === 0 || body.active === "0" ? 0 : 1;
+  if (currentUser.id === id && (role !== "supervisor" || active !== 1)) {
+    throw new HttpError(400, "You cannot remove your own active supervisor access.");
+  }
+  if (existing.role === "supervisor" && existing.active === 1 && (role !== "supervisor" || active !== 1)) {
+    await requireAnotherActiveSupervisor(env, id);
+  }
+
+  await env.SCHEDULER_DB.prepare(`
+    UPDATE users
+    SET email = ?, name = ?, role = ?, active = ?
+    WHERE id = ?
+  `).bind(email, name, role, active, id).run();
+
+  const user = await env.SCHEDULER_DB.prepare("SELECT id, email, name, role, active, created_at, last_login_at FROM users WHERE id = ?").bind(id).first();
+  return json(request, env, { user });
+}
+
+async function deleteUser(request, env, currentUser, id) {
+  if (currentUser.id === id) throw new HttpError(400, "You cannot delete your own supervisor account.");
+
+  const existing = await env.SCHEDULER_DB.prepare("SELECT id, role, active FROM users WHERE id = ? LIMIT 1").bind(id).first();
+  if (!existing) throw new HttpError(404, "Worker not found");
+  if (existing.role === "supervisor" && existing.active === 1) {
+    await requireAnotherActiveSupervisor(env, id);
+  }
+
+  await env.SCHEDULER_DB.prepare("DELETE FROM calendar_feeds WHERE user_id = ?").bind(id).run();
+  await env.SCHEDULER_DB.prepare("DELETE FROM job_assignments WHERE user_id = ?").bind(id).run();
+  await env.SCHEDULER_DB.prepare("UPDATE notification_log SET user_id = NULL WHERE user_id = ?").bind(id).run();
+  await env.SCHEDULER_DB.prepare("UPDATE job_completion_documents SET created_by_user_id = NULL WHERE created_by_user_id = ?").bind(id).run();
+  await env.SCHEDULER_DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
+
+  return json(request, env, { ok: true });
+}
+
+async function requireAnotherActiveSupervisor(env, id) {
+  const row = await env.SCHEDULER_DB.prepare(`
+    SELECT COUNT(*) AS count
+    FROM users
+    WHERE role = 'supervisor' AND active = 1 AND id != ?
+  `).bind(id).first();
+  if (Number(row?.count || 0) < 1) {
+    throw new HttpError(400, "At least one active supervisor account must remain.");
+  }
 }
 
 async function listConsultations(request, env) {
@@ -467,6 +546,253 @@ async function createFeed(request, env) {
   await env.SCHEDULER_DB.prepare("INSERT INTO calendar_feeds (id, feed_type, user_id, token) VALUES (?, ?, ?, ?)").bind(id, feedType, userId, token).run();
   const feed = await env.SCHEDULER_DB.prepare("SELECT id, feed_type, user_id, token, active, created_at, last_accessed_at FROM calendar_feeds WHERE id = ?").bind(id).first();
   return json(request, env, { feed }, { status: 201 });
+}
+
+async function databaseStats(request, env) {
+  const databases = [
+    await collectDatabaseStats(env.SCHEDULER_DB, "SCHEDULER_DB", [
+      { name: "users", dateColumn: "created_at" },
+      { name: "jobs", dateColumn: "COALESCE(scheduled_start, created_at)" },
+      { name: "job_assignments", dateColumn: "created_at" },
+      { name: "job_completion_documents", dateColumn: "COALESCE(completed_at, signed_at, created_at)" },
+      { name: "calendar_feeds", dateColumn: "created_at" },
+      { name: "notification_log", dateColumn: "created_at" },
+    ]),
+  ];
+
+  if (env.CONSULT_DB) {
+    databases.push(await collectDatabaseStats(env.CONSULT_DB, "CONSULT_DB", [
+      { name: "schedule_requests", dateColumn: "COALESCE(preferred_date, created_at)" },
+    ]));
+  }
+
+  const tables = databases.flatMap((database) => database.tables);
+  return json(request, env, {
+    databases,
+    totalRows: tables.reduce((sum, table) => sum + table.rows, 0),
+    totalBytes: tables.reduce((sum, table) => sum + table.bytes, 0),
+    oldest: tables.map((table) => table.oldest).filter(Boolean).sort()[0] || null,
+    generatedAt: new Date().toISOString(),
+  });
+}
+
+async function collectDatabaseStats(db, name, tableConfigs) {
+  requireBinding(db, name);
+  const tables = [];
+
+  for (const config of tableConfigs) {
+    try {
+      const countRow = await db.prepare(`SELECT COUNT(*) AS rows FROM ${config.name}`).first();
+      const dateRow = await db.prepare(`
+        SELECT MIN(${config.dateColumn}) AS oldest, MAX(${config.dateColumn}) AS newest
+        FROM ${config.name}
+      `).first();
+      const sample = (await db.prepare(`SELECT * FROM ${config.name} LIMIT 250`).all()).results ?? [];
+      const rowCount = Number(countRow?.rows || 0);
+      const averageBytes = sample.length ? byteLength(JSON.stringify(sample)) / sample.length : 0;
+
+      tables.push({
+        name: config.name,
+        rows: rowCount,
+        bytes: Math.round(rowCount * averageBytes),
+        oldest: dateRow?.oldest || null,
+        newest: dateRow?.newest || null,
+      });
+    } catch (error) {
+      if (!isMissingD1TableError(error)) throw error;
+    }
+  }
+
+  return {
+    name,
+    tables,
+    rows: tables.reduce((sum, table) => sum + table.rows, 0),
+    bytes: tables.reduce((sum, table) => sum + table.bytes, 0),
+  };
+}
+
+async function exportDatabaseRows(request, env, url) {
+  const from = optionalDateParam(url.searchParams.get("from"), "from");
+  const to = optionalDateParam(url.searchParams.get("to"), "to");
+  const format = (url.searchParams.get("format") || "csv").toLowerCase();
+  if (!["csv", "sql"].includes(format)) throw new HttpError(400, "Unsupported export format");
+
+  if (format === "sql") return exportDatabaseSqlDump(request, env, from, to);
+
+  const rows = [
+    ...await exportSchedulerRows(env, from, to),
+    ...await exportConsultRows(env, from, to),
+  ];
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const headers = corsHeaders(request, env);
+  headers.set("Content-Type", "text/csv; charset=utf-8");
+  headers.set("Content-Disposition", `attachment; filename="luc-contracting-tax-export-${dateStamp}.csv"`);
+  headers.set("Cache-Control", "no-store");
+
+  return new Response(rowsToCsv(rows), { headers });
+}
+
+async function exportDatabaseSqlDump(request, env, from, to) {
+  const dump = await buildSqlDump(env, from, to);
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const headers = corsHeaders(request, env);
+  headers.set("Content-Type", "application/sql; charset=utf-8");
+  headers.set("Content-Disposition", `attachment; filename="luc-contracting-d1-archive-${dateStamp}.sql"`);
+  headers.set("Cache-Control", "no-store");
+
+  return new Response(dump, { headers });
+}
+
+async function exportSchedulerRows(env, from, to) {
+  const rows = [];
+  const jobs = (await dateFilteredAll(env.SCHEDULER_DB, `
+    SELECT jobs.*, GROUP_CONCAT(COALESCE(users.name, users.email)) AS assigned_workers
+    FROM jobs
+    LEFT JOIN job_assignments ON job_assignments.job_id = jobs.id
+    LEFT JOIN users ON users.id = job_assignments.user_id
+    WHERE date(COALESCE(jobs.scheduled_start, jobs.created_at)) BETWEEN date(?) AND date(?)
+    GROUP BY jobs.id
+    ORDER BY COALESCE(jobs.scheduled_start, jobs.created_at) ASC
+  `, from, to)).results ?? [];
+
+  for (const job of jobs) {
+    rows.push({
+      database: "SCHEDULER_DB",
+      table: "jobs",
+      record_type: "job",
+      record_id: job.id,
+      record_date: dateOnly(job.scheduled_start || job.created_at),
+      title: job.title,
+      customer_name: job.customer_name,
+      customer_email: job.customer_email,
+      location: job.location,
+      status: job.status,
+      workers: job.assigned_workers,
+      details: [job.public_notes, job.internal_notes].filter(Boolean).join("\n\n"),
+      signature_name: "",
+      signed_at: "",
+      work_image_attached_at: "",
+      created_at: job.created_at,
+      updated_at: job.updated_at,
+    });
+  }
+
+  const completions = (await dateFilteredAll(env.SCHEDULER_DB, `
+    SELECT completion.*, jobs.title AS job_title, jobs.location AS job_location
+    FROM job_completion_documents completion
+    LEFT JOIN jobs ON jobs.id = completion.job_id
+    WHERE date(COALESCE(completion.completed_at, completion.signed_at, completion.created_at)) BETWEEN date(?) AND date(?)
+    ORDER BY COALESCE(completion.completed_at, completion.signed_at, completion.created_at) ASC
+  `, from, to)).results ?? [];
+
+  for (const completion of completions) {
+    rows.push({
+      database: "SCHEDULER_DB",
+      table: "job_completion_documents",
+      record_type: "completion",
+      record_id: completion.id,
+      record_date: dateOnly(completion.completed_at || completion.signed_at || completion.created_at),
+      title: completion.job_title,
+      customer_name: completion.customer_name,
+      customer_email: completion.customer_email,
+      location: completion.job_location,
+      status: "complete",
+      workers: "",
+      details: [completion.work_performed, completion.materials_used, completion.customer_notes].filter(Boolean).join("\n\n"),
+      signature_name: completion.signature_name,
+      signed_at: completion.signature_data_url ? completion.signed_at : "",
+      work_image_attached_at: completion.work_image_data_url ? (completion.updated_at || completion.created_at) : "",
+      created_at: completion.created_at,
+      updated_at: completion.updated_at,
+    });
+  }
+
+  return rows;
+}
+
+async function exportConsultRows(env, from, to) {
+  if (!env.CONSULT_DB) return [];
+
+  try {
+    const consults = (await dateFilteredAll(env.CONSULT_DB, `
+      SELECT *
+      FROM schedule_requests
+      WHERE date(COALESCE(preferred_date, created_at)) BETWEEN date(?) AND date(?)
+      ORDER BY COALESCE(preferred_date, created_at) ASC
+    `, from, to)).results ?? [];
+
+    return consults.map((consult) => ({
+      database: "CONSULT_DB",
+      table: "schedule_requests",
+      record_type: "consultation",
+      record_id: consult.id,
+      record_date: dateOnly(consult.preferred_date || consult.created_at),
+      title: consult.service_type,
+      customer_name: consult.name,
+      customer_email: consult.email,
+      location: consult.address,
+      status: consult.status,
+      workers: "",
+      details: consult.message,
+      signature_name: "",
+      signed_at: "",
+      work_image_attached_at: "",
+      created_at: consult.created_at,
+      updated_at: "",
+    }));
+  } catch (error) {
+    if (isMissingD1TableError(error)) return [];
+    throw error;
+  }
+}
+
+async function purgeDatabaseRows(request, env) {
+  const body = await readJson(request);
+  const before = requiredDateParam(body.before, "before");
+  const preserveFrom = optionalDateParam(body.preserveFrom, "preserveFrom");
+  const preserveTo = optionalDateParam(body.preserveTo, "preserveTo");
+  const dryRun = body.dryRun !== false;
+
+  if ((preserveFrom && !preserveTo) || (!preserveFrom && preserveTo)) throw new HttpError(400, "Set both preserve window dates, or leave both blank.");
+  if (preserveFrom && preserveTo && preserveFrom > preserveTo) throw new HttpError(400, "Preserve window start must be before its end.");
+
+  const jobIds = await purgeableJobIds(env, before, preserveFrom, preserveTo);
+  const consultIds = await purgeableConsultIds(env, before, preserveFrom, preserveTo);
+  const counts = {
+    jobs: jobIds.length,
+    job_assignments: await countRowsByJobIds(env.SCHEDULER_DB, "job_assignments", jobIds),
+    job_completion_documents: await countRowsByJobIds(env.SCHEDULER_DB, "job_completion_documents", jobIds),
+    notification_log: await purgeableNotificationCount(env, before, preserveFrom, preserveTo),
+    schedule_requests: consultIds.length,
+  };
+
+  if (!dryRun) {
+    if (jobIds.length) {
+      await env.SCHEDULER_DB.prepare(`DELETE FROM job_completion_documents WHERE job_id IN (${placeholders(jobIds)})`).bind(...jobIds).run();
+      await env.SCHEDULER_DB.prepare(`DELETE FROM job_assignments WHERE job_id IN (${placeholders(jobIds)})`).bind(...jobIds).run();
+      await env.SCHEDULER_DB.prepare(`DELETE FROM notification_log WHERE job_id IN (${placeholders(jobIds)})`).bind(...jobIds).run();
+      await env.SCHEDULER_DB.prepare(`DELETE FROM jobs WHERE id IN (${placeholders(jobIds)})`).bind(...jobIds).run();
+    }
+
+    await env.SCHEDULER_DB.prepare(`
+      DELETE FROM notification_log
+      WHERE date(created_at) < date(?)
+        AND (? IS NULL OR date(created_at) NOT BETWEEN date(?) AND date(?))
+    `).bind(before, preserveFrom, preserveFrom, preserveTo).run();
+
+    if (consultIds.length && env.CONSULT_DB) {
+      await env.CONSULT_DB.prepare(`DELETE FROM schedule_requests WHERE id IN (${placeholders(consultIds)})`).bind(...consultIds).run();
+    }
+  }
+
+  return json(request, env, {
+    dryRun,
+    rows: Object.values(counts).reduce((sum, count) => sum + count, 0),
+    counts,
+    before,
+    preserveFrom,
+    preserveTo,
+  });
 }
 
 async function renderIcsFeed(env, token) {
@@ -728,7 +1054,261 @@ function dateTimeFromParts(date, hour, minute, period) {
 }
 
 function isValidDocumentImageDataUrl(value) {
-  return /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value) && value.length <= 400000;
+  const image = parseImageDataUrl(value);
+  return Boolean(image && image.bytes.length > 24 && image.bytes.length <= 400000 && imageBytesMatchMime(image.mime, image.bytes));
+}
+
+function byteLength(value) {
+  return new TextEncoder().encode(String(value ?? "")).length;
+}
+
+function dateOnly(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function requiredDateParam(value, field) {
+  const clean = optionalDateParam(value, field);
+  if (!clean) throw new HttpError(400, `Missing ${field}`);
+  return clean;
+}
+
+function optionalDateParam(value, field) {
+  if (value === null || value === undefined || value === "") return null;
+  const clean = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) throw new HttpError(400, `Invalid ${field}`);
+  return clean;
+}
+
+function dateRangeStart(value) {
+  return value || "0001-01-01";
+}
+
+function dateRangeEnd(value) {
+  return value || "9999-12-31";
+}
+
+function placeholders(values) {
+  return values.map(() => "?").join(",");
+}
+
+async function dateFilteredAll(db, sql, from, to) {
+  return db.prepare(sql).bind(dateRangeStart(from), dateRangeEnd(to)).all();
+}
+
+function rowsToCsv(rows) {
+  const columns = [
+    "database",
+    "table",
+    "record_type",
+    "record_id",
+    "record_date",
+    "title",
+    "customer_name",
+    "customer_email",
+    "location",
+    "status",
+    "workers",
+    "details",
+    "signature_name",
+    "signed_at",
+    "work_image_attached_at",
+    "created_at",
+    "updated_at",
+  ];
+  const escapeCsv = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  return [
+    columns.join(","),
+    ...rows.map((row) => columns.map((column) => escapeCsv(row[column])).join(",")),
+  ].join("\r\n");
+}
+
+async function buildSqlDump(env, from, to) {
+  const schedulerJobs = (await dateFilteredAll(env.SCHEDULER_DB, `
+    SELECT *
+    FROM jobs
+    WHERE date(COALESCE(scheduled_start, created_at)) BETWEEN date(?) AND date(?)
+    ORDER BY COALESCE(scheduled_start, created_at) ASC
+  `, from, to)).results ?? [];
+  const jobIds = schedulerJobs.map((job) => job.id).filter(Boolean);
+  const schedulerUsers = (await env.SCHEDULER_DB.prepare("SELECT * FROM users ORDER BY name COLLATE NOCASE, email COLLATE NOCASE").all()).results ?? [];
+  const schedulerAssignments = jobIds.length
+    ? (await env.SCHEDULER_DB.prepare(`SELECT * FROM job_assignments WHERE job_id IN (${placeholders(jobIds)}) ORDER BY created_at ASC`).bind(...jobIds).all()).results ?? []
+    : [];
+  const schedulerCompletions = (await dateFilteredAll(env.SCHEDULER_DB, `
+    SELECT *
+    FROM job_completion_documents
+    WHERE date(COALESCE(completed_at, signed_at, created_at)) BETWEEN date(?) AND date(?)
+    ORDER BY COALESCE(completed_at, signed_at, created_at) ASC
+  `, from, to)).results ?? [];
+  const schedulerNotifications = (await dateFilteredAll(env.SCHEDULER_DB, `
+    SELECT *
+    FROM notification_log
+    WHERE date(created_at) BETWEEN date(?) AND date(?)
+    ORDER BY created_at ASC
+  `, from, to)).results ?? [];
+  const consultRequests = await sqlDumpConsultRows(env, from, to);
+  const lines = [
+    "-- Luc Contracting D1 archive",
+    `-- Generated: ${new Date().toISOString()}`,
+    `-- Date range: ${from || "beginning"} to ${to || "end"}`,
+    "PRAGMA foreign_keys=OFF;",
+    "BEGIN TRANSACTION;",
+    "",
+    ...sqlCreateStatements(),
+    "",
+    ...rowsToSqlInserts("scheduler_users", schedulerUsers),
+    ...rowsToSqlInserts("scheduler_jobs", schedulerJobs),
+    ...rowsToSqlInserts("scheduler_job_assignments", schedulerAssignments),
+    ...rowsToSqlInserts("scheduler_job_completion_documents", schedulerCompletions),
+    ...rowsToSqlInserts("scheduler_notification_log", schedulerNotifications),
+    ...rowsToSqlInserts("consult_schedule_requests", consultRequests),
+    "COMMIT;",
+    "",
+  ];
+
+  return lines.join("\n");
+}
+
+async function sqlDumpConsultRows(env, from, to) {
+  if (!env.CONSULT_DB) return [];
+
+  try {
+    return (await dateFilteredAll(env.CONSULT_DB, `
+      SELECT *
+      FROM schedule_requests
+      WHERE date(COALESCE(preferred_date, created_at)) BETWEEN date(?) AND date(?)
+      ORDER BY COALESCE(preferred_date, created_at) ASC
+    `, from, to)).results ?? [];
+  } catch (error) {
+    if (isMissingD1TableError(error)) return [];
+    throw error;
+  }
+}
+
+function sqlCreateStatements() {
+  return [
+    "DROP TABLE IF EXISTS scheduler_users;",
+    "CREATE TABLE scheduler_users (id TEXT PRIMARY KEY, email TEXT, name TEXT, role TEXT, active INTEGER, created_at TEXT, last_login_at TEXT);",
+    "DROP TABLE IF EXISTS scheduler_jobs;",
+    "CREATE TABLE scheduler_jobs (id TEXT PRIMARY KEY, title TEXT, customer_name TEXT, customer_email TEXT, location TEXT, scheduled_start TEXT, scheduled_end TEXT, status TEXT, public_notes TEXT, internal_notes TEXT, created_at TEXT, updated_at TEXT);",
+    "DROP TABLE IF EXISTS scheduler_job_assignments;",
+    "CREATE TABLE scheduler_job_assignments (job_id TEXT, user_id TEXT, created_at TEXT);",
+    "DROP TABLE IF EXISTS scheduler_job_completion_documents;",
+    "CREATE TABLE scheduler_job_completion_documents (id TEXT PRIMARY KEY, job_id TEXT, customer_name TEXT, customer_email TEXT, work_performed TEXT, materials_used TEXT, customer_notes TEXT, work_image_data_url TEXT, signature_name TEXT, signature_data_url TEXT, signed_at TEXT, completed_at TEXT, created_by_user_id TEXT, created_at TEXT, updated_at TEXT);",
+    "DROP TABLE IF EXISTS scheduler_notification_log;",
+    "CREATE TABLE scheduler_notification_log (id TEXT PRIMARY KEY, job_id TEXT, user_id TEXT, email TEXT, status TEXT, error TEXT, created_at TEXT);",
+    "DROP TABLE IF EXISTS consult_schedule_requests;",
+    "CREATE TABLE consult_schedule_requests (id TEXT PRIMARY KEY, created_at TEXT, name TEXT, email TEXT, phone TEXT, service_type TEXT, preferred_date TEXT, preferred_time TEXT, address TEXT, message TEXT, status TEXT, source TEXT);",
+  ];
+}
+
+function rowsToSqlInserts(table, rows) {
+  if (!rows.length) return [`-- ${table}: 0 rows`];
+
+  const columns = Object.keys(rows[0]);
+  return rows.map((row) =>
+    `INSERT INTO ${table} (${columns.map(sqlIdentifier).join(", ")}) VALUES (${columns.map((column) => sqlValue(row[column])).join(", ")});`
+  );
+}
+
+function sqlIdentifier(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function sqlValue(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function parseImageDataUrl(value) {
+  const match = String(value || "").match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match) return null;
+
+  try {
+    const binary = atob(match[2]);
+    return {
+      mime: match[1],
+      bytes: Uint8Array.from(binary, (char) => char.charCodeAt(0)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function imageBytesMatchMime(mime, bytes) {
+  if (mime === "png") {
+    return bytes[0] === 0x89
+      && bytes[1] === 0x50
+      && bytes[2] === 0x4e
+      && bytes[3] === 0x47
+      && bytes[4] === 0x0d
+      && bytes[5] === 0x0a
+      && bytes[6] === 0x1a
+      && bytes[7] === 0x0a;
+  }
+
+  if (mime === "jpeg") {
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+
+  if (mime === "webp") {
+    return bytes[0] === 0x52
+      && bytes[1] === 0x49
+      && bytes[2] === 0x46
+      && bytes[3] === 0x46
+      && bytes[8] === 0x57
+      && bytes[9] === 0x45
+      && bytes[10] === 0x42
+      && bytes[11] === 0x50;
+  }
+
+  return false;
+}
+
+async function purgeableJobIds(env, before, preserveFrom, preserveTo) {
+  const rows = await env.SCHEDULER_DB.prepare(`
+    SELECT id
+    FROM jobs
+    WHERE status IN ('complete', 'cancelled')
+      AND date(COALESCE(scheduled_start, created_at)) < date(?)
+      AND (? IS NULL OR date(COALESCE(scheduled_start, created_at)) NOT BETWEEN date(?) AND date(?))
+  `).bind(before, preserveFrom, preserveFrom, preserveTo).all();
+  return (rows.results ?? []).map((row) => row.id).filter(Boolean);
+}
+
+async function purgeableConsultIds(env, before, preserveFrom, preserveTo) {
+  if (!env.CONSULT_DB) return [];
+
+  try {
+    const rows = await env.CONSULT_DB.prepare(`
+      SELECT id
+      FROM schedule_requests
+      WHERE status IN ('complete', 'completed', 'cancelled', 'closed', 'archived')
+        AND date(COALESCE(preferred_date, created_at)) < date(?)
+        AND (? IS NULL OR date(COALESCE(preferred_date, created_at)) NOT BETWEEN date(?) AND date(?))
+    `).bind(before, preserveFrom, preserveFrom, preserveTo).all();
+    return (rows.results ?? []).map((row) => row.id).filter(Boolean);
+  } catch (error) {
+    if (isMissingD1TableError(error)) return [];
+    throw error;
+  }
+}
+
+async function purgeableNotificationCount(env, before, preserveFrom, preserveTo) {
+  const row = await env.SCHEDULER_DB.prepare(`
+    SELECT COUNT(*) AS count
+    FROM notification_log
+    WHERE date(created_at) < date(?)
+      AND (? IS NULL OR date(created_at) NOT BETWEEN date(?) AND date(?))
+  `).bind(before, preserveFrom, preserveFrom, preserveTo).first();
+  return Number(row?.count || 0);
+}
+
+async function countRowsByJobIds(db, table, jobIds) {
+  if (!jobIds.length) return 0;
+  const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE job_id IN (${placeholders(jobIds)})`).bind(...jobIds).first();
+  return Number(row?.count || 0);
 }
 
 function splitCsv(value) {

@@ -8,17 +8,18 @@ import AppShell from "../layouts/AppShell.astro";
   heading="Workers"
   lede="Manage employees, supervisor access, active status, and calendar feed state."
 >
-  <div slot="actions" class="button-row">
+  <div slot="actions" class="button-row requires-supervisor" data-allowed="false">
     <button class="button" type="submit" form="worker-form">Add employee</button>
   </div>
 
-  <section class="grid two">
+  <section class="grid two requires-supervisor" data-allowed="false">
     <section class="card">
-      <h2>Add Worker</h2>
+      <h2>Add Or Edit Worker</h2>
       <form id="worker-form" class="form-grid" data-api-form="users">
+        <input type="hidden" name="id" data-user-id />
         <div class="field">
           <label for="email">Email</label>
-          <input id="email" name="email" type="email" placeholder="name@example.com" />
+          <input id="email" name="email" type="email" placeholder="name@example.com" required />
         </div>
         <div class="field">
           <label for="worker-name">Name</label>
@@ -31,7 +32,17 @@ import AppShell from "../layouts/AppShell.astro";
             <option>supervisor</option>
           </select>
         </div>
-        <button class="button" type="submit">Save worker</button>
+        <div class="field">
+          <label for="active">Status</label>
+          <select id="active" name="active">
+            <option value="1">active</option>
+            <option value="0">inactive</option>
+          </select>
+        </div>
+        <div class="button-row">
+          <button class="button" type="submit">Save worker</button>
+          <button class="button secondary" type="reset" data-worker-form-reset>Clear</button>
+        </div>
         <p class="form-status" data-form-status></p>
       </form>
     </section>
@@ -42,5 +53,10 @@ import AppShell from "../layouts/AppShell.astro";
         Loading approved users from D1.
       </div>
     </section>
+  </section>
+
+  <section class="card role-panel" data-panel-role="employee" data-visible="true">
+    <h2>Supervisor Access Required</h2>
+    <p class="lede">Workers can only be managed by a supervisor account.</p>
   </section>
 </AppShell>

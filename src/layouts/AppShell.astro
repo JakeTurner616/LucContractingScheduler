@@ -110,6 +110,7 @@ const icons = {
       const loginAction = document.querySelector("[data-login-action]");
       const sessionStorageKey = "luc_scheduler_session";
       const calendarStorageKey = "luc_scheduler_calendar_expanded";
+      const spreadsheetCellSafeDataUrlLength = 30000;
       let currentUser = null;
       let isAuthenticated = false;
       let selectedJob = null;
@@ -516,13 +517,31 @@ const icons = {
               <article class="list-item">
                 <div>
                   <div class="item-title">${escapeHtml(user.name || user.email)}</div>
-                  <p class="item-meta">${escapeHtml(user.email)} / ${escapeHtml(user.role)}</p>
+                  <p class="item-meta">${escapeHtml(user.email)} / ${escapeHtml(user.role)} / ${escapeHtml(user.last_login_at ? `Last login ${formatDateTime(user.last_login_at)}` : "No login recorded")}</p>
                 </div>
-                <span class="badge ${user.active === 1 ? "good" : "warn"}">${user.active === 1 ? "Active" : "Inactive"}</span>
+                <div class="button-row">
+                  <span class="badge ${user.active === 1 ? "good" : "warn"}">${user.active === 1 ? "Active" : "Inactive"}</span>
+                  ${currentUser?.role === "supervisor" ? `
+                    <button class="button secondary" type="button" data-edit-user="${escapeHtml(encodeURIComponent(JSON.stringify(user)))}">Edit</button>
+                    <button class="button secondary" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-user-label="${escapeHtml(user.name || user.email)}">Delete</button>
+                  ` : ""}
+                </div>
               </article>
             `).join("")}
           </div>
         `);
+      };
+
+      const fillUserForm = (user) => {
+        const form = document.querySelector("#worker-form");
+        if (!(form instanceof HTMLFormElement)) return;
+
+        form.querySelector("[data-user-id]").value = user.id || "";
+        form.elements.email.value = user.email || "";
+        form.elements.name.value = user.name || "";
+        form.elements.role.value = user.role || "employee";
+        form.elements.active.value = String(user.active === 0 ? 0 : 1);
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
       };
 
       const renderCalendar = (jobs) => {
@@ -652,14 +671,17 @@ const icons = {
             try {
               const body = formToJson(form);
               const jobId = resource === "jobs" ? body.id : "";
+              const userId = resource === "users" ? body.id : "";
               delete body.id;
 
-              await apiFetch(jobId ? `/api/${resource}/${encodeURIComponent(jobId)}` : `/api/${resource}`, {
-                method: jobId ? "PUT" : "POST",
+              const resourceId = jobId || userId;
+              await apiFetch(resourceId ? `/api/${resource}/${encodeURIComponent(resourceId)}` : `/api/${resource}`, {
+                method: resourceId ? "PUT" : "POST",
                 body: JSON.stringify(body)
               });
               form.reset();
               form.querySelector("[data-job-id]")?.setAttribute("value", "");
+              form.querySelector("[data-user-id]")?.setAttribute("value", "");
               setStatus(form, "Saved.", "success");
               await loadSchedulerData(currentUser?.role || "employee");
             } catch (error) {
@@ -733,8 +755,12 @@ const icons = {
           const body = formToJson(form);
           const canvas = document.querySelector("[data-signature-pad]");
           body.signature_name = body.customer_name;
-          body.signature_data_url = canvas instanceof HTMLCanvasElement ? canvas.toDataURL("image/png") : "";
+          body.signature_data_url = canvas instanceof HTMLCanvasElement ? compressSignatureCanvas(canvas) : "";
           body.work_image_data_url = selectedWorkImageDataUrl;
+          if (body.signature_data_url.length > spreadsheetCellSafeDataUrlLength) {
+            setStatus(form, "Signature is still too large for spreadsheet export. Clear it and sign a simpler mark.", "error");
+            return;
+          }
 
           const { job, completion } = await apiFetch(`/api/jobs/${encodeURIComponent(selectedJob.id)}/completion`, {
             method: "POST",
@@ -916,6 +942,43 @@ const icons = {
         setStatus(form, "Work image attached and compressed.");
       };
 
+      const dataUrlFromCanvas = (sourceCanvas, maxLength, initialQuality = 0.72) => {
+        let canvas = sourceCanvas;
+        let quality = initialQuality;
+        let dataUrl = canvas.toDataURL("image/jpeg", quality);
+
+        while (dataUrl.length > maxLength && quality > 0.36) {
+          quality -= 0.08;
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+
+        while (dataUrl.length > maxLength && canvas.width > 160 && canvas.height > 120) {
+          const nextCanvas = document.createElement("canvas");
+          nextCanvas.width = Math.max(160, Math.round(canvas.width * 0.82));
+          nextCanvas.height = Math.max(120, Math.round(canvas.height * 0.82));
+          const context = nextCanvas.getContext("2d");
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+          context.drawImage(canvas, 0, 0, nextCanvas.width, nextCanvas.height);
+          canvas = nextCanvas;
+          quality = 0.52;
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+
+        return dataUrl;
+      };
+
+      const compressSignatureCanvas = (sourceCanvas) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 560;
+        canvas.height = 146;
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(sourceCanvas, 0, 0, canvas.width, canvas.height);
+        return dataUrlFromCanvas(canvas, spreadsheetCellSafeDataUrlLength, 0.68);
+      };
+
       const compressWorkImage = (file) => new Promise((resolve, reject) => {
         const image = new Image();
         const reader = new FileReader();
@@ -926,8 +989,8 @@ const icons = {
         reader.addEventListener("error", () => reject(new Error("Could not read image.")));
         image.addEventListener("error", () => reject(new Error("Could not load image.")));
         image.addEventListener("load", () => {
-          const maxWidth = 900;
-          const maxHeight = 700;
+          const maxWidth = 460;
+          const maxHeight = 340;
           const scale = Math.min(1, maxWidth / image.naturalWidth, maxHeight / image.naturalHeight);
           const width = Math.max(1, Math.round(image.naturalWidth * scale));
           const height = Math.max(1, Math.round(image.naturalHeight * scale));
@@ -935,17 +998,13 @@ const icons = {
           canvas.width = width;
           canvas.height = height;
           const context = canvas.getContext("2d");
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, width, height);
           context.drawImage(image, 0, 0, width, height);
+          const dataUrl = dataUrlFromCanvas(canvas, spreadsheetCellSafeDataUrlLength, 0.64);
 
-          let quality = 0.72;
-          let dataUrl = canvas.toDataURL("image/jpeg", quality);
-          while (dataUrl.length > 250000 && quality > 0.42) {
-            quality -= 0.1;
-            dataUrl = canvas.toDataURL("image/jpeg", quality);
-          }
-
-          if (dataUrl.length > 350000) {
-            reject(new Error("Compressed image is still too large. Try a smaller photo."));
+          if (dataUrl.length > spreadsheetCellSafeDataUrlLength) {
+            reject(new Error("Compressed image is still too large for spreadsheet export. Try a simpler or smaller photo."));
             return;
           }
 
@@ -1087,6 +1146,40 @@ const icons = {
         } catch {
           // Ignore malformed edit payloads.
         }
+      });
+
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-edit-user]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        try {
+          fillUserForm(JSON.parse(decodeURIComponent(button.dataset.editUser || "")));
+        } catch {
+          // Ignore malformed edit payloads.
+        }
+      });
+
+      document.addEventListener("click", async (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-delete-user]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        const userId = button.dataset.deleteUser;
+        const label = button.dataset.deleteUserLabel || "this worker";
+        if (!userId || !window.confirm(`Delete ${label}? This removes their login, feed, and job assignments.`)) return;
+
+        try {
+          button.disabled = true;
+          await apiFetch(`/api/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+          await loadSchedulerData(currentUser?.role || "employee");
+        } catch (error) {
+          window.alert(error instanceof Error ? error.message : "Delete failed.");
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      document.querySelector("[data-worker-form-reset]")?.addEventListener("click", () => {
+        document.querySelector("[data-user-id]")?.setAttribute("value", "");
       });
 
       document.addEventListener("click", async (event) => {

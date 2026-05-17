@@ -6,22 +6,428 @@ import AppShell from "../layouts/AppShell.astro";
   title="Settings"
   active="settings"
   heading="Settings"
-  lede="Session controls."
+  lede="Export tax records, monitor D1 database footprint, and purge old completed rows when storage needs trimming."
 >
-  <section class="grid two">
-    <section class="card">
-      <h2>Session</h2>
-      <div class="list">
-        <article class="list-item">
-          <div>
-            <div class="item-title">Sign out</div>
-            <p class="item-meta">End this session on the current device.</p>
-          </div>
-          <form data-logout-form>
-            <button class="button secondary" type="submit">Sign out</button>
-          </form>
-        </article>
-      </div>
+  <style>
+    .metric-grid {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-bottom: 18px;
+    }
+
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+      padding: 20px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .metric-value {
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .quota-track {
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      height: 12px;
+      overflow: hidden;
+    }
+
+    .quota-track span {
+      background: linear-gradient(90deg, var(--good), #d7be83, var(--danger));
+      display: block;
+      height: 100%;
+      width: var(--quota-width, 0%);
+    }
+
+    .table-wrap {
+      overflow: auto;
+    }
+
+    .data-table {
+      border-collapse: collapse;
+      min-width: 760px;
+      width: 100%;
+    }
+
+    .data-table th,
+    .data-table td {
+      border-bottom: 1px solid var(--border);
+      padding: 11px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .data-table th {
+      color: var(--muted-strong);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+    }
+
+    .settings-note {
+      color: var(--muted);
+      line-height: 1.45;
+      margin-bottom: 16px;
+    }
+
+    .danger-note {
+      background: #fff5f2;
+      border: 1px solid #e2b5aa;
+      border-radius: 8px;
+      color: var(--danger);
+      line-height: 1.45;
+      margin: 0;
+      padding: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .metric-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+
+  <div slot="actions" class="button-row requires-supervisor" data-allowed="false">
+    <button class="button secondary" type="button" data-refresh-database>Refresh metrics</button>
+  </div>
+
+  <section class="requires-supervisor" data-allowed="false">
+    <section class="metric-grid" aria-label="D1 footprint summary">
+      <article class="metric-card">
+        <span class="metric-label">Estimated D1 Footprint</span>
+        <strong class="metric-value" data-total-size>--</strong>
+        <div class="quota-track" aria-label="500 MB Cloudflare D1 free tier usage">
+          <span data-quota-bar></span>
+        </div>
+        <p class="item-meta" data-quota-note>Waiting for database metrics.</p>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Total Rows</span>
+        <strong class="metric-value" data-total-rows>--</strong>
+        <p class="item-meta" data-row-note>Across scheduler and consultation databases.</p>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Oldest Record</span>
+        <strong class="metric-value" data-oldest-record>--</strong>
+        <p class="item-meta">Use this to choose export and purge windows.</p>
+      </article>
     </section>
+
+    <section class="card">
+      <h2>Database Size By Table</h2>
+      <p class="settings-note">
+        Size is estimated from sampled row payloads because D1 does not expose exact file bytes through a Worker binding.
+      </p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Database</th>
+              <th>Table</th>
+              <th>Rows</th>
+              <th>Estimated Size</th>
+              <th>Oldest</th>
+              <th>Newest</th>
+            </tr>
+          </thead>
+          <tbody data-database-table>
+            <tr>
+              <td colspan="6">Metrics have not been loaded yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="form-status" data-database-status></p>
+    </section>
+
+    <section class="grid two" style="margin-top: 18px;">
+      <section class="card">
+        <h2>Export Records</h2>
+        <p class="settings-note">
+          Download a spreadsheet summary without image data, or use the SQLite SQL archive for full-fidelity records with original signature and work image data URLs intact.
+        </p>
+        <form class="form-grid" data-export-form>
+          <div class="grid two">
+            <div class="field">
+              <label for="export-from">From</label>
+              <input id="export-from" name="from" type="date" />
+            </div>
+            <div class="field">
+              <label for="export-to">To</label>
+              <input id="export-to" name="to" type="date" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="export-format">Export format</label>
+            <select id="export-format" name="format">
+              <option value="sql">SQLite SQL archive</option>
+              <option value="csv">Spreadsheet CSV</option>
+            </select>
+          </div>
+          <button class="button" type="submit">Download Export</button>
+          <p class="form-status" data-form-status></p>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Purge Old Rows</h2>
+        <p class="settings-note">
+          Purge only completed or cancelled work before the cutoff date. The preserve window protects a day, week, or month that still has work in motion.
+        </p>
+        <form class="form-grid" data-purge-form>
+          <div class="field">
+            <label for="purge-before">Delete rows before</label>
+            <input id="purge-before" name="before" type="date" required />
+          </div>
+          <div class="grid two">
+            <div class="field">
+              <label for="preserve-from">Preserve from</label>
+              <input id="preserve-from" name="preserveFrom" type="date" />
+            </div>
+            <div class="field">
+              <label for="preserve-to">Preserve to</label>
+              <input id="preserve-to" name="preserveTo" type="date" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="purge-confirm">Confirm purge</label>
+            <input id="purge-confirm" name="confirm" placeholder="Type PURGE before final purge" autocomplete="off" />
+          </div>
+          <div class="button-row">
+            <button class="button secondary" type="button" data-dry-run-purge>Dry run</button>
+            <button class="button" type="submit" data-final-purge disabled>Purge rows</button>
+          </div>
+          <p class="danger-note">Export the spreadsheet first. A completed purge permanently deletes matching D1 rows.</p>
+          <p class="form-status" data-form-status></p>
+        </form>
+      </section>
+    </section>
+  </section>
+
+  <script>
+    const sessionStorageKey = "luc_scheduler_session";
+    const quotaBytes = 500 * 1024 * 1024;
+    const apiOrigin = document.body.dataset.apiOrigin || "";
+
+    const settingsApiFetch = async (path, options = {}) => {
+      const localSession = sessionStorage.getItem(sessionStorageKey);
+      const response = await fetch(`${apiOrigin}${path}`, {
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+          ...(localSession ? { Authorization: `Bearer ${localSession}` } : {}),
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers || {})
+        },
+        ...options
+      });
+
+      return response;
+    };
+
+    const setFormStatus = (form, message, kind = "") => {
+      const status = form?.querySelector("[data-form-status]") || document.querySelector("[data-database-status]");
+      if (!status) return;
+      status.textContent = message;
+      status.dataset.kind = kind;
+    };
+
+    const readJsonResponse = async (response) => {
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) : {};
+      if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+      return payload;
+    };
+
+    const formatBytes = (value = 0) => {
+      if (!Number.isFinite(value) || value <= 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB"];
+      let size = value;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+      }
+      return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+    };
+
+    const formatNumber = (value = 0) => new Intl.NumberFormat("en-US").format(value);
+
+    const formatDate = (value) => {
+      if (!value) return "--";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" }).format(date);
+    };
+
+    const renderDatabaseStats = (stats) => {
+      const databases = Array.isArray(stats.databases) ? stats.databases : [];
+      const rows = databases.flatMap((database) =>
+        (database.tables || []).map((table) => ({
+          database: database.name,
+          table: table.name,
+          rows: Number(table.rows || 0),
+          bytes: Number(table.bytes || 0),
+          oldest: table.oldest,
+          newest: table.newest
+        }))
+      );
+      const totalBytes = Number(stats.totalBytes || rows.reduce((sum, row) => sum + row.bytes, 0));
+      const totalRows = Number(stats.totalRows || rows.reduce((sum, row) => sum + row.rows, 0));
+      const quotaPercent = Math.min((totalBytes / quotaBytes) * 100, 100);
+
+      document.querySelector("[data-total-size]").textContent = formatBytes(totalBytes);
+      document.querySelector("[data-total-rows]").textContent = formatNumber(totalRows);
+      document.querySelector("[data-oldest-record]").textContent = formatDate(stats.oldest);
+      document.querySelector("[data-quota-note]").textContent = `${quotaPercent.toFixed(1)}% of a 500 MB D1 database quota, estimated from row payloads.`;
+      document.querySelector("[data-quota-bar]").style.setProperty("--quota-width", `${quotaPercent.toFixed(1)}%`);
+
+      const tableBody = document.querySelector("[data-database-table]");
+      tableBody.innerHTML = "";
+      if (!rows.length) {
+        const emptyRow = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 6;
+        cell.textContent = "No table metrics were returned.";
+        emptyRow.append(cell);
+        tableBody.append(emptyRow);
+        return;
+      }
+
+      rows.sort((a, b) => b.bytes - a.bytes).forEach((item) => {
+        const row = document.createElement("tr");
+        [item.database, item.table, formatNumber(item.rows), formatBytes(item.bytes), formatDate(item.oldest), formatDate(item.newest)].forEach((value) => {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          row.append(cell);
+        });
+        tableBody.append(row);
+      });
+    };
+
+    const refreshDatabaseStats = async () => {
+      const status = document.querySelector("[data-database-status]");
+      status.textContent = "Loading D1 metrics...";
+      status.dataset.kind = "";
+      try {
+        const stats = await readJsonResponse(await settingsApiFetch("/api/admin/database/stats"));
+        renderDatabaseStats(stats);
+        status.textContent = "Metrics refreshed.";
+        status.dataset.kind = "success";
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : "Could not load metrics.";
+        status.dataset.kind = "error";
+      }
+    };
+
+    document.querySelector("[data-refresh-database]")?.addEventListener("click", refreshDatabaseStats);
+
+    document.querySelector("[data-export-form]")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const params = new URLSearchParams(new FormData(form));
+      [...params.entries()].forEach(([key, value]) => {
+        if (!value) params.delete(key);
+      });
+
+      setFormStatus(form, "Preparing export...");
+      try {
+        const format = params.get("format") || "sql";
+        const response = await settingsApiFetch(`/api/admin/database/export?${params.toString()}`, {
+          headers: { Accept: format === "sql" ? "application/sql" : "text/csv" }
+        });
+        if (!response.ok) await readJsonResponse(response);
+        const blob = await response.blob();
+        const fileName = response.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/i)?.[1]
+          || `luc-contracting-tax-export-${new Date().toISOString().slice(0, 10)}.${format}`;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setFormStatus(form, `Downloaded ${fileName}.`, "success");
+      } catch (error) {
+        setFormStatus(form, error instanceof Error ? error.message : "Export failed.", "error");
+      }
+    });
+
+    const purgeForm = document.querySelector("[data-purge-form]");
+    const finalPurgeButton = document.querySelector("[data-final-purge]");
+    const confirmInput = document.querySelector("#purge-confirm");
+
+    const purgePayload = (dryRun) => {
+      const data = new FormData(purgeForm);
+      return {
+        before: data.get("before") || "",
+        preserveFrom: data.get("preserveFrom") || null,
+        preserveTo: data.get("preserveTo") || null,
+        dryRun
+      };
+    };
+
+    const runPurge = async (dryRun) => {
+      if (!(purgeForm instanceof HTMLFormElement)) return;
+      setFormStatus(purgeForm, dryRun ? "Running purge preview..." : "Purging rows...");
+      try {
+        const result = await readJsonResponse(await settingsApiFetch("/api/admin/database/purge", {
+          method: "POST",
+          body: JSON.stringify(purgePayload(dryRun))
+        }));
+        const countSummary = Object.entries(result.counts || {})
+          .filter(([, count]) => Number(count) > 0)
+          .map(([table, count]) => `${table}: ${formatNumber(Number(count))}`)
+          .join(", ");
+        setFormStatus(
+          purgeForm,
+          dryRun
+            ? `Dry run found ${formatNumber(result.rows)} rows. ${countSummary || "Nothing eligible."}`
+            : `Purge complete. Removed ${formatNumber(result.rows)} rows. ${countSummary || "Nothing eligible."}`,
+          "success"
+        );
+        if (!dryRun) await refreshDatabaseStats();
+      } catch (error) {
+        setFormStatus(purgeForm, error instanceof Error ? error.message : "Purge failed.", "error");
+      }
+    };
+
+    document.querySelector("[data-dry-run-purge]")?.addEventListener("click", () => runPurge(true));
+    purgeForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (confirmInput.value.trim() !== "PURGE") {
+        setFormStatus(purgeForm, 'Type "PURGE" before running the final purge.', "error");
+        return;
+      }
+      runPurge(false);
+    });
+    confirmInput?.addEventListener("input", () => {
+      finalPurgeButton.disabled = confirmInput.value.trim() !== "PURGE";
+    });
+
+    refreshDatabaseStats();
+  </script>
+
+  <section class="card role-panel" data-panel-role="employee" data-visible="true">
+    <h2>Supervisor Settings</h2>
+    <p class="lede">Database export and purge controls are available to supervisors.</p>
   </section>
 </AppShell>
