@@ -442,6 +442,338 @@ h3 {
   color: var(--good);
 }
 
+.completion-header {
+  align-items: start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.completion-layout {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 0.95fr) minmax(320px, 1.05fr);
+}
+
+.completion-document {
+  background: #fbfaf7;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  line-height: 1.45;
+  min-height: 420px;
+  padding: 18px;
+}
+
+.document-title {
+  align-items: start;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 12px;
+}
+
+.document-title strong {
+  display: block;
+  font-size: 1.2rem;
+}
+
+.document-print-action {
+  flex: 0 0 auto;
+}
+
+.document-section {
+  display: grid;
+  gap: 7px;
+}
+
+.document-section-title {
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+  font-weight: 850;
+  padding-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.document-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.customer-grid,
+.job-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.document-field {
+  min-width: 0;
+}
+
+.document-label {
+  color: var(--muted);
+  display: block;
+  font-size: 0.76rem;
+  font-weight: 850;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+}
+
+.document-text {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-height: 68px;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.document-signature {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  min-height: 116px;
+  padding: 10px;
+}
+
+.signature-image {
+  display: block;
+  max-height: 160px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.work-image {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: block;
+  max-height: 260px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.signature-placeholder {
+  color: var(--muted);
+  font-weight: 760;
+}
+
+.signature-pad {
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  height: 220px;
+  touch-action: none;
+  width: 100%;
+}
+
+.signature-dialog {
+  background: transparent;
+  border: 0;
+  max-height: min(94vh, 1100px);
+  max-width: min(960px, calc(100vw - 28px));
+  padding: 0;
+  width: 100%;
+}
+
+.signature-dialog::backdrop {
+  background: rgba(24, 33, 29, 0.58);
+}
+
+.signature-dialog-shell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 18px;
+  max-height: min(94vh, 1100px);
+  overflow: auto;
+  padding: 20px;
+}
+
+.signature-dialog-bar {
+  align-items: start;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding-bottom: 14px;
+}
+
+.formal-document {
+  background: #ffffff;
+  box-shadow: none;
+  min-height: 0;
+}
+
+.signature-block {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  padding-top: 16px;
+}
+
+.signature-block .signature-pad {
+  height: 240px;
+}
+
+@media print {
+  @page {
+    margin: 0.48in;
+    size: letter;
+  }
+
+  html,
+  body {
+    background: #ffffff;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .formal-document,
+  .formal-document * {
+    visibility: visible;
+  }
+
+  [data-signature-dialog] {
+    background: #ffffff;
+    display: block;
+    height: auto;
+    inset: auto;
+    max-height: none;
+    max-width: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    overflow: visible;
+    width: 100%;
+  }
+
+  .signature-dialog-shell {
+    border: 0;
+    box-shadow: none;
+    display: block;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .signature-dialog-bar,
+  .signature-block,
+  .document-print-action {
+    display: none !important;
+  }
+
+  [data-signature-document-preview] {
+    position: static;
+  }
+
+  .formal-document {
+    background: #ffffff;
+    border: 0;
+    color: #20251f;
+    display: block;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.42;
+    min-height: 0;
+    padding: 0;
+  }
+
+  .formal-document .document-title {
+    border-bottom: 2px solid #20251f;
+    display: block;
+    margin-bottom: 12pt;
+    padding-bottom: 9pt;
+  }
+
+  .formal-document .document-title .document-label {
+    color: #5d655d;
+    font-size: 8pt;
+    letter-spacing: 0.08em;
+  }
+
+  .formal-document .document-title strong {
+    font-size: 17pt;
+    letter-spacing: 0;
+  }
+
+  .formal-document .document-section {
+    border-bottom: 1px solid #d0d0d0;
+    break-inside: avoid;
+    display: grid;
+    gap: 5pt;
+    margin-bottom: 9pt;
+    padding-bottom: 8pt;
+    page-break-inside: avoid;
+  }
+
+  .formal-document .document-section-title {
+    border-bottom: 1px solid #cfd6cf;
+    color: #20251f;
+    font-size: 8.5pt;
+    padding-bottom: 3pt;
+  }
+
+  .formal-document .document-grid {
+    display: grid;
+    gap: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .formal-document .document-field {
+    border-bottom: 1px solid #e4e4e4;
+    min-height: 28pt;
+    padding: 5pt 7pt 4pt 0;
+  }
+
+  .formal-document .document-label {
+    color: #5d655d;
+    font-size: 7pt;
+    letter-spacing: 0.06em;
+    margin-bottom: 2pt;
+  }
+
+  .formal-document .document-text,
+  .formal-document .document-signature {
+    background: #ffffff;
+    border: 1px solid #d9dfd9;
+    border-radius: 0;
+    min-height: 0;
+    padding: 7pt;
+  }
+
+  .formal-document .document-avoid-break,
+  .formal-document .document-signature,
+  .formal-document .work-image,
+  .formal-document .signature-image {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .formal-document .work-image {
+    max-height: 2.35in;
+    width: auto;
+  }
+
+  .formal-document .signature-image {
+    max-height: 1.35in;
+    width: auto;
+  }
+
+  .formal-document .document-signature {
+    min-height: 1.05in;
+  }
+}
+
 .calendar-grid {
   display: grid;
   gap: 10px;
@@ -527,8 +859,18 @@ h3 {
     display: block;
   }
 
+  .signature-dialog-bar {
+    display: grid;
+  }
+
+  .document-title {
+    display: grid;
+  }
+
   .grid.two,
-  .grid.three {
+  .grid.three,
+  .completion-layout,
+  .document-grid {
     grid-template-columns: 1fr;
   }
 

@@ -40,17 +40,27 @@ export default {
 
       if (url.pathname === "/api/me" && request.method === "GET") return json(request, env, { user: await requireUser(request, env) });
 
+      const completionMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/completion$/);
+      if (completionMatch) {
+        const user = await requireUser(request, env);
+        if (request.method === "GET") return getCompletionDocument(request, env, user, completionMatch[1]);
+        if (request.method === "POST" || request.method === "PUT") {
+          requireSupervisor(user);
+          return saveCompletionDocument(request, env, user, completionMatch[1]);
+        }
+      }
+
       const jobMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
       if (url.pathname === "/api/jobs" || jobMatch) {
         const user = await requireUser(request, env);
         if (request.method === "GET" && !jobMatch) return listJobs(request, env, user);
         if (request.method === "POST" && !jobMatch) {
           requireSupervisor(user);
-          return saveJob(request, env);
+          return saveJob(request, env, user);
         }
         if (request.method === "PUT" && jobMatch) {
           requireSupervisor(user);
-          return saveJob(request, env, jobMatch[1]);
+          return saveJob(request, env, user, jobMatch[1]);
         }
       }
 
@@ -241,13 +251,16 @@ async function listJobs(request, env, user) {
 function jobSelectSql(whereClause) {
   return `
     SELECT jobs.id, jobs.title, jobs.location, jobs.scheduled_start, jobs.scheduled_end, jobs.status,
-      jobs.public_notes, jobs.internal_notes, jobs.created_at, jobs.updated_at,
+      jobs.customer_name, jobs.customer_email, jobs.public_notes, jobs.internal_notes, jobs.created_at, jobs.updated_at,
+      completion.id AS completion_document_id, completion.signed_at AS completion_signed_at,
+      completion.customer_name AS completion_customer_name,
       GROUP_CONCAT(users.id) AS assigned_user_ids,
       GROUP_CONCAT(COALESCE(users.name, users.email)) AS assigned_user_names,
       GROUP_CONCAT(users.email) AS assigned_user_emails
     FROM jobs
     LEFT JOIN job_assignments ON job_assignments.job_id = jobs.id
     LEFT JOIN users ON users.id = job_assignments.user_id
+    LEFT JOIN job_completion_documents completion ON completion.job_id = jobs.id
     WHERE ${whereClause}
     GROUP BY jobs.id
     ORDER BY COALESCE(jobs.scheduled_start, jobs.created_at) ASC
@@ -263,30 +276,40 @@ function normalizeJobs(rows) {
   }));
 }
 
-async function saveJob(request, env, id = crypto.randomUUID()) {
+async function saveJob(request, env, user, id = crypto.randomUUID()) {
   const body = await readJson(request);
   const title = stringField(body.title, "title");
+  const customerName = nullableString(body.customer_name);
+  const customerEmail = nullableString(body.customer_email);
   const location = nullableString(body.location);
-  const scheduledStart = nullableString(body.scheduled_start);
-  const scheduledEnd = nullableString(body.scheduled_end);
+  const scheduledStart = nullableString(body.scheduled_start) || dateTimeFromParts(body.job_date, body.start_hour, body.start_minute, body.start_period);
+  const scheduledEnd = nullableString(body.scheduled_end)
+    || dateTimeFromParts(body.end_date || body.job_date, body.end_hour, body.end_minute, body.end_period);
   const publicNotes = nullableString(body.public_notes);
   const internalNotes = nullableString(body.internal_notes);
   const status = enumField(body.status ?? "scheduled", "status", ["draft", "scheduled", "complete", "cancelled"]);
   const assignedUserIds = Array.isArray(body.assigned_user_ids) ? body.assigned_user_ids.filter(Boolean) : [];
   const existing = await env.SCHEDULER_DB.prepare("SELECT id FROM jobs WHERE id = ?").bind(id).first();
 
+  if (status === "complete") {
+    const completion = await findCompletionDocument(env, id);
+    if (!completion?.signed_at) {
+      throw new HttpError(400, "A signed work completion document is required before this job can be marked complete.");
+    }
+  }
+
   if (existing) {
     await env.SCHEDULER_DB.prepare(`
       UPDATE jobs
-      SET title = ?, location = ?, scheduled_start = ?, scheduled_end = ?, status = ?, public_notes = ?, internal_notes = ?, updated_at = datetime('now')
+      SET title = ?, customer_name = ?, customer_email = ?, location = ?, scheduled_start = ?, scheduled_end = ?, status = ?, public_notes = ?, internal_notes = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).bind(title, location, scheduledStart, scheduledEnd, status, publicNotes, internalNotes, id).run();
+    `).bind(title, customerName, customerEmail, location, scheduledStart, scheduledEnd, status, publicNotes, internalNotes, id).run();
     await env.SCHEDULER_DB.prepare("DELETE FROM job_assignments WHERE job_id = ?").bind(id).run();
   } else {
     await env.SCHEDULER_DB.prepare(`
-      INSERT INTO jobs (id, title, location, scheduled_start, scheduled_end, status, public_notes, internal_notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, title, location, scheduledStart, scheduledEnd, status, publicNotes, internalNotes).run();
+      INSERT INTO jobs (id, title, customer_name, customer_email, location, scheduled_start, scheduled_end, status, public_notes, internal_notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, title, customerName, customerEmail, location, scheduledStart, scheduledEnd, status, publicNotes, internalNotes).run();
   }
 
   for (const userId of assignedUserIds) {
@@ -296,6 +319,77 @@ async function saveJob(request, env, id = crypto.randomUUID()) {
   await notifyAssignedWorkers(env, id, existing ? "updated" : "created");
   const saved = await env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(id).all();
   return json(request, env, { job: normalizeJobs(saved.results ?? [])[0] }, { status: existing ? 200 : 201 });
+}
+
+async function getCompletionDocument(request, env, user, jobId) {
+  const job = await getAuthorizedJob(env, user, jobId);
+  const completion = await findCompletionDocument(env, jobId);
+  return json(request, env, { job, completion });
+}
+
+async function saveCompletionDocument(request, env, user, jobId) {
+  const job = await getAuthorizedJob(env, user, jobId);
+  const body = await readJson(request);
+  const customerName = stringField(body.customer_name, "customer_name");
+  const signatureName = nullableString(body.signature_name) || customerName;
+  const signatureDataUrl = stringField(body.signature_data_url, "signature_data_url");
+  if (!signatureDataUrl.startsWith("data:image/png;base64,") || signatureDataUrl.length < 300) {
+    throw new HttpError(400, "Customer signature is required before completing the job.");
+  }
+
+  const customerEmail = nullableString(body.customer_email);
+  const workPerformed = nullableString(body.work_performed) || job.public_notes || "Work completed as scheduled.";
+  const materialsUsed = nullableString(body.materials_used);
+  const customerNotes = nullableString(body.customer_notes);
+  const workImageDataUrl = nullableString(body.work_image_data_url);
+  if (workImageDataUrl && !isValidDocumentImageDataUrl(workImageDataUrl)) {
+    throw new HttpError(400, "Work image must be a small PNG, JPEG, or WebP image.");
+  }
+  const existing = await findCompletionDocument(env, jobId);
+  const documentId = existing?.id || crypto.randomUUID();
+
+  if (existing) {
+    await env.SCHEDULER_DB.prepare(`
+      UPDATE job_completion_documents
+      SET customer_name = ?, customer_email = ?, work_performed = ?, materials_used = ?, customer_notes = ?, work_image_data_url = ?,
+        signature_name = ?, signature_data_url = ?, signed_at = datetime('now'), completed_at = datetime('now'),
+        created_by_user_id = ?, updated_at = datetime('now')
+      WHERE job_id = ?
+    `).bind(customerName, customerEmail, workPerformed, materialsUsed, customerNotes, workImageDataUrl, signatureName, signatureDataUrl, user.id, jobId).run();
+  } else {
+    await env.SCHEDULER_DB.prepare(`
+      INSERT INTO job_completion_documents
+        (id, job_id, customer_name, customer_email, work_performed, materials_used, customer_notes, work_image_data_url, signature_name, signature_data_url, created_by_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(documentId, jobId, customerName, customerEmail, workPerformed, materialsUsed, customerNotes, workImageDataUrl, signatureName, signatureDataUrl, user.id).run();
+  }
+
+  await env.SCHEDULER_DB.prepare("UPDATE jobs SET status = 'complete', updated_at = datetime('now') WHERE id = ?").bind(jobId).run();
+
+  const saved = await env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(jobId).all();
+  return json(request, env, {
+    job: normalizeJobs(saved.results ?? [])[0],
+    completion: await findCompletionDocument(env, jobId),
+  }, { status: existing ? 200 : 201 });
+}
+
+async function getAuthorizedJob(env, user, jobId) {
+  const rows = await (user.role === "supervisor"
+    ? env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(jobId).all()
+    : env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ? AND EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)")).bind(jobId, user.id).all());
+  const job = normalizeJobs(rows.results ?? [])[0];
+  if (!job) throw new HttpError(404, "Job not found");
+  return job;
+}
+
+async function findCompletionDocument(env, jobId) {
+  return env.SCHEDULER_DB.prepare(`
+    SELECT id, job_id, customer_name, customer_email, work_performed, materials_used, customer_notes, work_image_data_url,
+      signature_name, signature_data_url, signed_at, completed_at, created_by_user_id, created_at, updated_at
+    FROM job_completion_documents
+    WHERE job_id = ?
+    LIMIT 1
+  `).bind(jobId).first();
 }
 
 async function listUsers(request, env, user) {
@@ -616,6 +710,25 @@ function enumField(value, field, allowed) {
   const clean = stringField(value, field);
   if (!allowed.includes(clean)) throw new HttpError(400, `Invalid ${field}`);
   return clean;
+}
+
+function dateTimeFromParts(date, hour, minute, period) {
+  const cleanDate = nullableString(date);
+  const cleanMinute = nullableString(minute);
+  const cleanPeriod = nullableString(period);
+  if (!cleanDate || !cleanMinute || !cleanPeriod) return null;
+
+  let numericHour = Number(nullableString(hour));
+  if (!Number.isInteger(numericHour) || numericHour < 1 || numericHour > 12) return null;
+  if (cleanPeriod === "AM" && numericHour === 12) numericHour = 0;
+  if (cleanPeriod === "PM" && numericHour !== 12) numericHour += 12;
+  if (!["AM", "PM"].includes(cleanPeriod) || !/^\d{2}$/.test(cleanMinute)) return null;
+
+  return `${cleanDate}T${String(numericHour).padStart(2, "0")}:${cleanMinute}`;
+}
+
+function isValidDocumentImageDataUrl(value) {
+  return /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value) && value.length <= 400000;
 }
 
 function splitCsv(value) {

@@ -21,6 +21,16 @@ import AppShell from "../layouts/AppShell.astro";
           <label for="title">Job name</label>
           <input id="title" name="title" required />
         </div>
+        <div class="grid two">
+          <div class="field">
+            <label for="job-customer-name">Customer name</label>
+            <input id="job-customer-name" name="customer_name" />
+          </div>
+          <div class="field">
+            <label for="job-customer-email">Customer email</label>
+            <input id="job-customer-email" name="customer_email" type="email" />
+          </div>
+        </div>
         <div class="field">
           <label for="location">Location</label>
           <input id="location" name="location" />
@@ -86,6 +96,84 @@ import AppShell from "../layouts/AppShell.astro";
       </div>
     </section>
   </section>
+
+  <section class="card requires-supervisor" data-allowed="false" data-completion-panel hidden style="margin-top: 18px;">
+    <div class="completion-header">
+      <div>
+        <h2>Work Completion Document</h2>
+        <p class="item-meta">Prepare the customer and work details here, then open a clean customer signature document.</p>
+      </div>
+      <span class="badge warn" data-completion-state>Unsigned</span>
+    </div>
+
+    <div class="completion-layout">
+      <article class="completion-document" data-completion-preview>
+        Select a job to prepare its completion document.
+      </article>
+
+      <form id="completion-form" class="form-grid" data-completion-form>
+        <div class="grid two">
+          <div class="field">
+            <label for="customer-name">Customer name</label>
+            <input id="customer-name" name="customer_name" required />
+          </div>
+          <div class="field">
+            <label for="customer-email">Customer email</label>
+            <input id="customer-email" name="customer_email" type="email" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="work-performed">Work performed</label>
+          <textarea id="work-performed" name="work_performed"></textarea>
+        </div>
+        <div class="field">
+          <label for="materials-used">Materials used</label>
+          <textarea id="materials-used" name="materials_used"></textarea>
+        </div>
+        <div class="field">
+          <label for="customer-notes">Customer notes</label>
+          <textarea id="customer-notes" name="customer_notes"></textarea>
+        </div>
+        <div class="field">
+          <label for="work-image">Work image</label>
+          <input id="work-image" name="work_image_file" type="file" accept="image/png,image/jpeg,image/webp" data-work-image-input />
+          <p class="item-meta">Optional small photo of the completed work.</p>
+        </div>
+        <div class="button-row">
+          <button class="button" type="button" data-open-signature-document>Open customer signature document</button>
+        </div>
+        <p class="form-status" data-form-status></p>
+      </form>
+    </div>
+  </section>
+
+  <dialog class="signature-dialog" data-signature-dialog>
+    <div class="signature-dialog-shell">
+      <div class="signature-dialog-bar">
+        <div>
+          <p class="eyebrow">Customer signature</p>
+          <h2>Work Completion Document</h2>
+        </div>
+        <button class="button secondary" type="button" data-close-signature-document>Close</button>
+      </div>
+
+      <article class="completion-document formal-document" data-signature-document-preview>
+        Select a job to prepare its completion document.
+      </article>
+
+      <section class="signature-block">
+        <div>
+          <span class="document-label">Customer signature</span>
+          <p class="item-meta">By signing, the customer acknowledges the work described above has been completed.</p>
+        </div>
+        <canvas id="signature-pad" class="signature-pad" width="920" height="240" data-signature-pad></canvas>
+        <div class="button-row">
+          <button class="button secondary" type="button" data-clear-signature>Clear signature</button>
+          <button class="button" type="button" data-submit-signature-document>Sign and complete job</button>
+        </div>
+      </section>
+    </div>
+  </dialog>
 
   <section class="card requires-supervisor" data-allowed="false" style="margin-top: 18px;">
     <h2>Website Consultations</h2>

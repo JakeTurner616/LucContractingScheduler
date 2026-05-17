@@ -112,6 +112,9 @@ const icons = {
       const calendarStorageKey = "luc_scheduler_calendar_expanded";
       let currentUser = null;
       let isAuthenticated = false;
+      let selectedJob = null;
+      let signaturePadDirty = false;
+      let selectedWorkImageDataUrl = null;
 
       const setText = (element, value) => {
         if (element) element.textContent = value;
@@ -165,6 +168,17 @@ const icons = {
         }).format(date);
       };
 
+      const formatDate = (value) => {
+        if (!value) return "";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return new Intl.DateTimeFormat(undefined, {
+          year: "numeric",
+          month: "short",
+          day: "numeric"
+        }).format(date);
+      };
+
       const apiFetch = async (path, options = {}) => {
         const localSession = sessionStorage.getItem(sessionStorageKey);
         setText(localAuthStatus, localSession ? "Browser session captured" : "No browser session token");
@@ -206,8 +220,9 @@ const icons = {
         });
 
         if (form.id === "job-form") {
-          const scheduledStart = combineDateTimeParts(body.job_date, body.start_hour, body.start_minute, body.start_period);
-          const scheduledEnd = combineDateTimeParts(body.end_date || body.job_date, body.end_hour, body.end_minute, body.end_period);
+          const scheduledStart = readJobDateTime(form, "job_date", "start_hour", "start_minute", "start_period");
+          const scheduledEnd = readJobDateTime(form, "end_date", "end_hour", "end_minute", "end_period")
+            || readJobDateTime(form, "job_date", "end_hour", "end_minute", "end_period");
           delete body.job_date;
           delete body.start_hour;
           delete body.start_minute;
@@ -216,11 +231,16 @@ const icons = {
           delete body.end_hour;
           delete body.end_minute;
           delete body.end_period;
-          if (scheduledStart) body.scheduled_start = scheduledStart;
-          if (scheduledEnd) body.scheduled_end = scheduledEnd;
+          body.scheduled_start = scheduledStart || null;
+          body.scheduled_end = scheduledEnd || null;
         }
 
         return body;
+      };
+
+      const fieldValue = (form, name) => {
+        const field = form.elements[name];
+        return typeof field?.value === "string" ? field.value.trim() : "";
       };
 
       const to24HourTime = (hour, minute, period) => {
@@ -237,6 +257,14 @@ const icons = {
         const time = to24HourTime(hour, minute, period);
         return time ? `${date}T${time}` : "";
       };
+
+      const readJobDateTime = (form, dateName, hourName, minuteName, periodName) =>
+        combineDateTimeParts(
+          fieldValue(form, dateName),
+          fieldValue(form, hourName),
+          fieldValue(form, minuteName),
+          fieldValue(form, periodName)
+        );
 
       const splitDateTime = (value) => {
         if (!value) return { date: "", hour: "", minute: "00", period: "AM" };
@@ -277,12 +305,146 @@ const icons = {
                   <p class="item-meta">${escapeHtml(formatDateTime(job.scheduled_start) || "No date")} / ${escapeHtml(job.location || "No location")} / ${escapeHtml((job.assigned_user_names || []).join(", ") || "Unassigned")}</p>
                 </div>
                 ${currentUser?.role === "supervisor" && document.querySelector("#job-form")
-                  ? `<button class="button secondary" type="button" data-edit-job="${escapeHtml(encodeURIComponent(JSON.stringify(job)))}">Edit</button>`
+                  ? `<div class="button-row"><span class="badge ${job.completion_signed_at ? "good" : ""}">${escapeHtml(job.completion_signed_at ? "Signed" : job.status)}</span><button class="button secondary" type="button" data-edit-job="${escapeHtml(encodeURIComponent(JSON.stringify(job)))}">Edit</button></div>`
                   : `<span class="badge">${escapeHtml(job.status)}</span>`}
               </article>
             `).join("")}
           </div>
         `);
+      };
+
+      const documentValue = (value, fallback = "Not recorded") => escapeHtml(value || fallback);
+
+      const setPrintAvailability = (canPrint) => {
+        document.querySelectorAll("[data-print-completion-document]").forEach((button) => {
+          if (button instanceof HTMLButtonElement) button.disabled = !canPrint;
+        });
+      };
+
+      const renderCompletionPreview = (job, completion = {}) => {
+        const previews = Array.from(document.querySelectorAll("[data-completion-preview], [data-signature-document-preview]"));
+        const state = document.querySelector("[data-completion-state]");
+        if (!previews.length) return;
+
+        if (!job) {
+          previews.forEach((preview) => {
+            preview.textContent = "Select a job to prepare its completion document.";
+          });
+          setPrintAvailability(false);
+          if (state) {
+            state.textContent = "Unsigned";
+            state.className = "badge warn";
+          }
+          return;
+        }
+
+        const workPerformed = completion.work_performed || job.public_notes || "Work completed as scheduled.";
+        const signatureName = completion.signature_name || completion.customer_name || "";
+        const signedAt = completion.signed_at ? formatDateTime(completion.signed_at) : "";
+        const signatureImage = completion.signature_data_url
+          ? `<img class="signature-image" src="${escapeHtml(completion.signature_data_url)}" alt="Saved customer signature" />`
+          : `<div class="signature-placeholder">Signature pending</div>`;
+        const workImage = completion.work_image_data_url
+          ? `<section class="document-section document-avoid-break"><span class="document-label">Work image</span><img class="work-image" src="${escapeHtml(completion.work_image_data_url)}" alt="Completed work" /></section>`
+          : "";
+        const documentHtml = `
+          <div class="document-title">
+            <div>
+              <span class="document-label">Luc Contracting</span>
+              <strong>Work Completion Document</strong>
+            </div>
+            <button class="button secondary document-print-action" type="button" data-print-completion-document disabled>Print</button>
+          </div>
+          <section class="document-section">
+            <div class="document-section-title">Customer Information</div>
+            <div class="document-grid customer-grid">
+              <div class="document-field"><span class="document-label">Customer</span>${documentValue(completion.customer_name)}</div>
+              <div class="document-field"><span class="document-label">Customer email</span>${documentValue(completion.customer_email)}</div>
+              <div class="document-field"><span class="document-label">Signed name</span>${documentValue(signatureName)}</div>
+              <div class="document-field"><span class="document-label">Signed at</span>${documentValue(signedAt, "Pending signature")}</div>
+            </div>
+          </section>
+          <section class="document-section">
+            <div class="document-section-title">Job Information</div>
+            <div class="document-grid job-grid">
+              <div class="document-field"><span class="document-label">Job</span>${documentValue(job.title)}</div>
+              <div class="document-field"><span class="document-label">Status</span>${documentValue(job.status)}</div>
+              <div class="document-field"><span class="document-label">Location</span>${documentValue(job.location)}</div>
+              <div class="document-field"><span class="document-label">Scheduled</span>${documentValue(formatDateTime(job.scheduled_start))}</div>
+              <div class="document-field"><span class="document-label">Completed</span>${documentValue(formatDate(completion.completed_at || completion.signed_at))}</div>
+              <div class="document-field"><span class="document-label">Workers</span>${documentValue((job.assigned_user_names || []).join(", "), "Unassigned")}</div>
+            </div>
+          </section>
+          <section class="document-section">
+            <span class="document-label">Work performed</span>
+            <div class="document-text">${escapeHtml(workPerformed)}</div>
+          </section>
+          <section class="document-section">
+            <span class="document-label">Materials used</span>
+            <div class="document-text">${documentValue(completion.materials_used)}</div>
+          </section>
+          <section class="document-section">
+            <span class="document-label">Customer notes</span>
+            <div class="document-text">${documentValue(completion.customer_notes)}</div>
+          </section>
+          ${workImage}
+          <section class="document-section document-avoid-break">
+            <span class="document-label">Customer acknowledgement</span>
+            <div class="document-text">I acknowledge that Luc Contracting has completed the work described in this document at the listed job location. I have had the opportunity to review the completed work, and I confirm that the work has been performed as requested unless otherwise noted in the customer notes section above.</div>
+          </section>
+          <section class="document-section document-avoid-break">
+            <span class="document-label">Saved customer signature</span>
+            <div class="document-signature">${signatureImage}</div>
+          </section>
+        `;
+        previews.forEach((preview) => {
+          preview.innerHTML = documentHtml;
+        });
+
+        if (state) {
+          state.textContent = completion.signed_at ? "Signed" : "Unsigned";
+          state.className = `badge ${completion.signed_at ? "good" : "warn"}`;
+        }
+        setPrintAvailability(Boolean(completion.signed_at && completion.signature_data_url));
+      };
+
+      const clearSignaturePad = () => {
+        const canvas = document.querySelector("[data-signature-pad]");
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+        const context = canvas.getContext("2d");
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        signaturePadDirty = false;
+      };
+
+      const loadCompletionDocument = async (job) => {
+        const panel = document.querySelector("[data-completion-panel]");
+        const form = document.querySelector("[data-completion-form]");
+        if (!(form instanceof HTMLFormElement) || !panel || !job?.id) return;
+
+        selectedJob = job;
+        panel.hidden = false;
+        setStatus(form, "Loading completion document...");
+        clearSignaturePad();
+        selectedWorkImageDataUrl = null;
+        const imageInput = form.querySelector("[data-work-image-input]");
+        if (imageInput instanceof HTMLInputElement) imageInput.value = "";
+
+        try {
+          const { completion } = await apiFetch(`/api/jobs/${encodeURIComponent(job.id)}/completion`);
+          selectedWorkImageDataUrl = completion?.work_image_data_url || null;
+          form.elements.customer_name.value = completion?.customer_name || job.customer_name || "";
+          form.elements.customer_email.value = completion?.customer_email || job.customer_email || "";
+          form.elements.work_performed.value = completion?.work_performed || job.public_notes || "Work completed as scheduled.";
+          form.elements.materials_used.value = completion?.materials_used || "";
+          form.elements.customer_notes.value = completion?.customer_notes || "";
+          renderCompletionPreview(job, completion || {});
+          setStatus(form, completion?.signed_at ? "Signed completion document on file." : "Ready for customer signature.", completion?.signed_at ? "success" : "");
+        } catch (error) {
+          renderCompletionPreview(job, {});
+          setStatus(form, error instanceof Error ? error.message : "Could not load completion document.", "error");
+        }
       };
 
       const fillJobForm = (job) => {
@@ -291,6 +453,8 @@ const icons = {
 
         form.querySelector("[data-job-id]").value = job.id || "";
         form.elements.title.value = job.title || "";
+        form.elements.customer_name.value = job.customer_name || "";
+        form.elements.customer_email.value = job.customer_email || "";
         form.elements.location.value = job.location || "";
         const start = splitDateTime(job.scheduled_start);
         const end = splitDateTime(job.scheduled_end);
@@ -312,6 +476,7 @@ const icons = {
         });
 
         form.scrollIntoView({ behavior: "smooth", block: "start" });
+        loadCompletionDocument(job);
       };
 
       const renderConsultations = (consultations) => {
@@ -504,6 +669,335 @@ const icons = {
         });
       };
 
+      const bindCompletionForm = () => {
+        const form = document.querySelector("[data-completion-form]");
+        if (!(form instanceof HTMLFormElement)) return;
+
+        form.addEventListener("input", () => {
+          const data = formToJson(form);
+          data.work_image_data_url = selectedWorkImageDataUrl;
+          renderCompletionPreview(selectedJob, data);
+        });
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          openSignatureDocument();
+        });
+      };
+
+      const openSignatureDocument = () => {
+        const form = document.querySelector("[data-completion-form]");
+        const dialog = document.querySelector("[data-signature-dialog]");
+        if (!(form instanceof HTMLFormElement) || !(dialog instanceof HTMLDialogElement)) return;
+
+        if (!selectedJob?.id) {
+          setStatus(form, "Select a job before opening the customer signature document.", "error");
+          return;
+        }
+
+        const body = formToJson(form);
+        body.work_image_data_url = selectedWorkImageDataUrl;
+        if (!body.customer_name) {
+          setStatus(form, "Add the customer name before opening the signature document.", "error");
+          form.elements.customer_name?.focus();
+          return;
+        }
+
+        renderCompletionPreview(selectedJob, body);
+        clearSignaturePad();
+        setStatus(form, "Customer document is open for signature.");
+        dialog.showModal();
+      };
+
+      const closeSignatureDocument = () => {
+        const dialog = document.querySelector("[data-signature-dialog]");
+        if (dialog instanceof HTMLDialogElement) dialog.close();
+      };
+
+      const submitSignatureDocument = async () => {
+        const form = document.querySelector("[data-completion-form]");
+        if (!(form instanceof HTMLFormElement)) return;
+
+        if (!selectedJob?.id) {
+          setStatus(form, "Select a job before completing it.", "error");
+          return;
+        }
+
+        if (!signaturePadDirty) {
+          setStatus(form, "Customer signature is required before completing the job.", "error");
+          return;
+        }
+
+        try {
+          setStatus(form, "Saving signed document...");
+          const body = formToJson(form);
+          const canvas = document.querySelector("[data-signature-pad]");
+          body.signature_name = body.customer_name;
+          body.signature_data_url = canvas instanceof HTMLCanvasElement ? canvas.toDataURL("image/png") : "";
+          body.work_image_data_url = selectedWorkImageDataUrl;
+
+          const { job, completion } = await apiFetch(`/api/jobs/${encodeURIComponent(selectedJob.id)}/completion`, {
+            method: "POST",
+            body: JSON.stringify(body)
+          });
+
+          selectedJob = job;
+          renderCompletionPreview(job, completion || {});
+          setStatus(form, "Signed document saved and job marked complete.", "success");
+          await loadSchedulerData(currentUser?.role || "employee");
+        } catch (error) {
+          setStatus(form, error instanceof Error ? error.message : "Completion failed.", "error");
+        }
+      };
+
+      const printCompletionDocument = () => {
+        const button = document.querySelector("[data-print-completion-document]");
+        if (button instanceof HTMLButtonElement && button.disabled) return;
+        const documentNode = document.querySelector("[data-signature-document-preview]");
+        if (!(documentNode instanceof HTMLElement)) return;
+
+        const printWindow = window.open("", "_blank", "width=900,height=1100");
+        if (!printWindow) {
+          window.print();
+          return;
+        }
+
+        printWindow.document.write(`
+          <!doctype html>
+          <html>
+            <head>
+              <meta charset="utf-8" />
+              <title>Work Completion Document</title>
+              <style>${completionPrintStyles()}</style>
+            </head>
+            <body>${documentNode.outerHTML}</body>
+          </html>
+        `);
+        printWindow.document.close();
+        printWindow.addEventListener("load", () => {
+          printWindow.focus();
+          printWindow.print();
+          printWindow.close();
+        });
+      };
+
+      const completionPrintStyles = () => `
+        @page { margin: 0.48in; size: letter; }
+        * { box-sizing: border-box; }
+        body {
+          background: #ffffff;
+          color: #20251f;
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: 10.5pt;
+          line-height: 1.42;
+          margin: 0;
+        }
+        .completion-document {
+          background: #ffffff;
+          border: 0;
+          display: block;
+          padding: 0;
+        }
+        .document-title {
+          border-bottom: 2px solid #20251f;
+          display: block;
+          margin-bottom: 12pt;
+          padding-bottom: 9pt;
+        }
+        .document-title .document-label {
+          color: #5d655d;
+          font-size: 8pt;
+          font-weight: 850;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .document-title strong {
+          display: block;
+          font-size: 17pt;
+          letter-spacing: 0;
+        }
+        .document-print-action { display: none !important; }
+        .document-section {
+          border-bottom: 1px solid #d0d0d0;
+          break-inside: avoid;
+          display: grid;
+          gap: 5pt;
+          margin-bottom: 9pt;
+          padding-bottom: 8pt;
+          page-break-inside: avoid;
+        }
+        .document-section-title {
+          border-bottom: 1px solid #cfd6cf;
+          color: #20251f;
+          font-size: 8.5pt;
+          font-weight: 850;
+          padding-bottom: 3pt;
+          text-transform: uppercase;
+        }
+        .document-grid {
+          display: grid;
+          gap: 0;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .document-field {
+          border-bottom: 1px solid #e4e4e4;
+          min-height: 28pt;
+          padding: 5pt 7pt 4pt 0;
+        }
+        .document-label {
+          color: #5d655d;
+          display: block;
+          font-size: 7pt;
+          font-weight: 850;
+          letter-spacing: 0.06em;
+          margin-bottom: 2pt;
+          text-transform: uppercase;
+        }
+        .document-text,
+        .document-signature {
+          background: #ffffff;
+          border: 1px solid #d9dfd9;
+          border-radius: 0;
+          min-height: 0;
+          padding: 7pt;
+          white-space: pre-wrap;
+        }
+        .document-avoid-break,
+        .document-signature,
+        .work-image,
+        .signature-image {
+          break-inside: avoid;
+          page-break-inside: avoid;
+        }
+        .work-image {
+          border: 1px solid #cfcfcf;
+          display: block;
+          max-height: 2.35in;
+          max-width: 100%;
+          object-fit: contain;
+          width: auto;
+        }
+        .signature-image {
+          display: block;
+          max-height: 1.35in;
+          max-width: 100%;
+          object-fit: contain;
+          width: auto;
+        }
+        .document-signature { min-height: 1.05in; }
+      `;
+
+      const readWorkImageFile = async (input) => {
+        const form = document.querySelector("[data-completion-form]");
+        if (!(form instanceof HTMLFormElement)) return;
+
+        const file = input.files?.[0];
+        if (!file) {
+          selectedWorkImageDataUrl = null;
+          const data = formToJson(form);
+          data.work_image_data_url = selectedWorkImageDataUrl;
+          renderCompletionPreview(selectedJob, data);
+          return;
+        }
+
+        if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 6000000) {
+          input.value = "";
+          selectedWorkImageDataUrl = null;
+          setStatus(form, "Use a PNG, JPEG, or WebP image under 6 MB.", "error");
+          return;
+        }
+
+        setStatus(form, "Compressing work image...");
+        selectedWorkImageDataUrl = await compressWorkImage(file);
+
+        const data = formToJson(form);
+        data.work_image_data_url = selectedWorkImageDataUrl;
+        renderCompletionPreview(selectedJob, data);
+        setStatus(form, "Work image attached and compressed.");
+      };
+
+      const compressWorkImage = (file) => new Promise((resolve, reject) => {
+        const image = new Image();
+        const reader = new FileReader();
+
+        reader.addEventListener("load", () => {
+          image.src = String(reader.result || "");
+        });
+        reader.addEventListener("error", () => reject(new Error("Could not read image.")));
+        image.addEventListener("error", () => reject(new Error("Could not load image.")));
+        image.addEventListener("load", () => {
+          const maxWidth = 900;
+          const maxHeight = 700;
+          const scale = Math.min(1, maxWidth / image.naturalWidth, maxHeight / image.naturalHeight);
+          const width = Math.max(1, Math.round(image.naturalWidth * scale));
+          const height = Math.max(1, Math.round(image.naturalHeight * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d");
+          context.drawImage(image, 0, 0, width, height);
+
+          let quality = 0.72;
+          let dataUrl = canvas.toDataURL("image/jpeg", quality);
+          while (dataUrl.length > 250000 && quality > 0.42) {
+            quality -= 0.1;
+            dataUrl = canvas.toDataURL("image/jpeg", quality);
+          }
+
+          if (dataUrl.length > 350000) {
+            reject(new Error("Compressed image is still too large. Try a smaller photo."));
+            return;
+          }
+
+          resolve(dataUrl);
+        });
+
+        reader.readAsDataURL(file);
+      });
+
+      const bindSignaturePad = () => {
+        const canvas = document.querySelector("[data-signature-pad]");
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+
+        const context = canvas.getContext("2d");
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        context.lineWidth = 3;
+        context.strokeStyle = "#20251f";
+        clearSignaturePad();
+
+        let drawing = false;
+        const pointFor = (event) => {
+          const rect = canvas.getBoundingClientRect();
+          return {
+            x: ((event.clientX - rect.left) / rect.width) * canvas.width,
+            y: ((event.clientY - rect.top) / rect.height) * canvas.height
+          };
+        };
+
+        canvas.addEventListener("pointerdown", (event) => {
+          drawing = true;
+          signaturePadDirty = true;
+          canvas.setPointerCapture(event.pointerId);
+          const point = pointFor(event);
+          context.beginPath();
+          context.moveTo(point.x, point.y);
+        });
+
+        canvas.addEventListener("pointermove", (event) => {
+          if (!drawing) return;
+          const point = pointFor(event);
+          context.lineTo(point.x, point.y);
+          context.stroke();
+        });
+
+        const finish = () => {
+          drawing = false;
+        };
+        canvas.addEventListener("pointerup", finish);
+        canvas.addEventListener("pointercancel", finish);
+      };
+
       const populateTimeSelects = () => {
         document.querySelectorAll("[data-hour-select]").forEach((select) => {
           if (!(select instanceof HTMLSelectElement) || select.dataset.loaded === "true") return;
@@ -620,6 +1114,50 @@ const icons = {
         await loadSchedulerData(currentUser?.role || "employee");
       });
 
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-clear-signature]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+        clearSignaturePad();
+      });
+
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-open-signature-document]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+        openSignatureDocument();
+      });
+
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-close-signature-document]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+        closeSignatureDocument();
+      });
+
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-submit-signature-document]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+        submitSignatureDocument();
+      });
+
+      document.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-print-completion-document]") : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+        printCompletionDocument();
+      });
+
+      document.addEventListener("change", (event) => {
+        const input = event.target instanceof Element ? event.target.closest("[data-work-image-input]") : null;
+        if (!(input instanceof HTMLInputElement)) return;
+        readWorkImageFile(input).catch((error) => {
+          const form = document.querySelector("[data-completion-form]");
+          if (form instanceof HTMLFormElement) setStatus(form, error instanceof Error ? error.message : "Could not read image.", "error");
+        });
+      });
+
+      document.querySelector("[data-signature-dialog]")?.addEventListener("click", (event) => {
+        const dialog = event.currentTarget;
+        if (event.target === dialog) closeSignatureDocument();
+      });
+
       const captureLocalSession = () => {
         const url = new URL(window.location.href);
         const session = url.searchParams.get("session");
@@ -634,6 +1172,8 @@ const icons = {
 
       populateTimeSelects();
       bindApiForms();
+      bindCompletionForm();
+      bindSignaturePad();
       captureLocalSession();
       loadSession();
     </script>

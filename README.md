@@ -55,3 +55,11 @@ the local D1 state under `.wrangler` instead of Cloudflare's public databases.
   from public documentation.
 - Calendar feed URLs are bearer links. Revoke and regenerate them if a link is
   shared with the wrong person or exposed somewhere public.
+
+## Job Completion Documents
+
+Jobs cannot be marked `complete` until a signed work completion document exists.
+The Jobs page autofills the document from the selected job, captures the
+customer name and digital signature, stores the signed document in
+`job_completion_documents`, and then marks the job complete. Email delivery for
+the signed document is intentionally left as a later integration.
