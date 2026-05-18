@@ -283,16 +283,19 @@ async function queryJobs(env, whereClause, binds = []) {
   try {
     return await env.SCHEDULER_DB.prepare(jobSelectSql(whereClause)).bind(...binds).all();
   } catch (error) {
-    if (!isMissingD1TableError(error) || !/job_completion_documents/i.test(errorMessage(error))) throw error;
-    return env.SCHEDULER_DB.prepare(jobSelectSql(whereClause, { includeCompletion: false })).bind(...binds).all();
+    if (!isLegacyJobsSchemaError(error)) throw error;
+    return env.SCHEDULER_DB.prepare(jobSelectSql(whereClause, { includeCompletion: false, includeCustomer: false })).bind(...binds).all();
   }
 }
 
 function jobSelectSql(whereClause, options = {}) {
   const includeCompletion = options.includeCompletion !== false;
+  const includeCustomer = options.includeCustomer !== false;
   return `
     SELECT jobs.id, jobs.title, jobs.location, jobs.scheduled_start, jobs.scheduled_end, jobs.status,
-      jobs.customer_name, jobs.customer_email, jobs.public_notes, jobs.internal_notes, jobs.created_at, jobs.updated_at,
+      ${includeCustomer ? "jobs.customer_name" : "NULL"} AS customer_name,
+      ${includeCustomer ? "jobs.customer_email" : "NULL"} AS customer_email,
+      jobs.public_notes, jobs.internal_notes, jobs.created_at, jobs.updated_at,
       ${includeCompletion ? "completion.id" : "NULL"} AS completion_document_id,
       ${includeCompletion ? "completion.signed_at" : "NULL"} AS completion_signed_at,
       ${includeCompletion ? "completion.customer_name" : "NULL"} AS completion_customer_name,
@@ -1653,6 +1656,12 @@ function errorResponse(request, env, error) {
 
 function isMissingD1TableError(error) {
   return /no such table/i.test(errorMessage(error));
+}
+
+function isLegacyJobsSchemaError(error) {
+  const message = errorMessage(error);
+  return /no such table/i.test(message) && /job_completion_documents/i.test(message)
+    || /no such column/i.test(message) && /jobs\.customer_(name|email)/i.test(message);
 }
 
 function errorMessage(error) {
