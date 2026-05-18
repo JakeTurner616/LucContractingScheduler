@@ -615,9 +615,10 @@ async function exportDatabaseRows(request, env, url) {
   const from = optionalDateParam(url.searchParams.get("from"), "from");
   const to = optionalDateParam(url.searchParams.get("to"), "to");
   const format = (url.searchParams.get("format") || "csv").toLowerCase();
-  if (!["csv", "sql"].includes(format)) throw new HttpError(400, "Unsupported export format");
+  if (!["csv", "sql", "sqlite"].includes(format)) throw new HttpError(400, "Unsupported export format");
 
   if (format === "sql") return exportDatabaseSqlDump(request, env, from, to);
+  if (format === "sqlite") return exportDatabaseSqlite(request, env, from, to);
 
   const rows = [
     ...await exportSchedulerRows(env, from, to),
@@ -641,6 +642,17 @@ async function exportDatabaseSqlDump(request, env, from, to) {
   headers.set("Cache-Control", "no-store");
 
   return new Response(dump, { headers });
+}
+
+async function exportDatabaseSqlite(request, env, from, to) {
+  const database = await buildSqliteDatabase(await buildArchiveTables(env, from, to));
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const headers = corsHeaders(request, env);
+  headers.set("Content-Type", "application/vnd.sqlite3");
+  headers.set("Content-Disposition", `attachment; filename="luc-contracting-d1-archive-${dateStamp}.sqlite"`);
+  headers.set("Cache-Control", "no-store");
+
+  return new Response(database, { headers });
 }
 
 async function exportSchedulerRows(env, from, to) {
@@ -1123,6 +1135,30 @@ function rowsToCsv(rows) {
 }
 
 async function buildSqlDump(env, from, to) {
+  const tables = await buildArchiveTables(env, from, to);
+  const insertLines = tables.flatMap((table) => rowsToSqlInserts(table.name, table.rows, table.columns));
+  const createLines = tables.flatMap((table) => [
+    `DROP TABLE IF EXISTS ${table.name};`,
+    `${table.createSql};`,
+  ]);
+  const lines = [
+    "-- Luc Contracting D1 archive",
+    `-- Generated: ${new Date().toISOString()}`,
+    `-- Date range: ${from || "beginning"} to ${to || "end"}`,
+    "PRAGMA foreign_keys=OFF;",
+    "BEGIN TRANSACTION;",
+    "",
+    ...createLines,
+    "",
+    ...insertLines,
+    "COMMIT;",
+    "",
+  ];
+
+  return lines.join("\n");
+}
+
+async function buildArchiveTables(env, from, to) {
   const schedulerJobs = (await dateFilteredAll(env.SCHEDULER_DB, `
     SELECT *
     FROM jobs
@@ -1147,26 +1183,18 @@ async function buildSqlDump(env, from, to) {
     ORDER BY created_at ASC
   `, from, to)).results ?? [];
   const consultRequests = await sqlDumpConsultRows(env, from, to);
-  const lines = [
-    "-- Luc Contracting D1 archive",
-    `-- Generated: ${new Date().toISOString()}`,
-    `-- Date range: ${from || "beginning"} to ${to || "end"}`,
-    "PRAGMA foreign_keys=OFF;",
-    "BEGIN TRANSACTION;",
-    "",
-    ...sqlCreateStatements(),
-    "",
-    ...rowsToSqlInserts("scheduler_users", schedulerUsers),
-    ...rowsToSqlInserts("scheduler_jobs", schedulerJobs),
-    ...rowsToSqlInserts("scheduler_job_assignments", schedulerAssignments),
-    ...rowsToSqlInserts("scheduler_job_completion_documents", schedulerCompletions),
-    ...rowsToSqlInserts("scheduler_notification_log", schedulerNotifications),
-    ...rowsToSqlInserts("consult_schedule_requests", consultRequests),
-    "COMMIT;",
-    "",
-  ];
 
-  return lines.join("\n");
+  return archiveTableDefinitions().map((table) => ({
+    ...table,
+    rows: {
+      scheduler_users: schedulerUsers,
+      scheduler_jobs: schedulerJobs,
+      scheduler_job_assignments: schedulerAssignments,
+      scheduler_job_completion_documents: schedulerCompletions,
+      scheduler_notification_log: schedulerNotifications,
+      consult_schedule_requests: consultRequests,
+    }[table.name] ?? [],
+  }));
 }
 
 async function sqlDumpConsultRows(env, from, to) {
@@ -1185,27 +1213,28 @@ async function sqlDumpConsultRows(env, from, to) {
   }
 }
 
-function sqlCreateStatements() {
+function archiveTableDefinitions() {
   return [
-    "DROP TABLE IF EXISTS scheduler_users;",
-    "CREATE TABLE scheduler_users (id TEXT PRIMARY KEY, email TEXT, name TEXT, role TEXT, active INTEGER, created_at TEXT, last_login_at TEXT);",
-    "DROP TABLE IF EXISTS scheduler_jobs;",
-    "CREATE TABLE scheduler_jobs (id TEXT PRIMARY KEY, title TEXT, customer_name TEXT, customer_email TEXT, location TEXT, scheduled_start TEXT, scheduled_end TEXT, status TEXT, public_notes TEXT, internal_notes TEXT, created_at TEXT, updated_at TEXT);",
-    "DROP TABLE IF EXISTS scheduler_job_assignments;",
-    "CREATE TABLE scheduler_job_assignments (job_id TEXT, user_id TEXT, created_at TEXT);",
-    "DROP TABLE IF EXISTS scheduler_job_completion_documents;",
-    "CREATE TABLE scheduler_job_completion_documents (id TEXT PRIMARY KEY, job_id TEXT, customer_name TEXT, customer_email TEXT, work_performed TEXT, materials_used TEXT, customer_notes TEXT, work_image_data_url TEXT, signature_name TEXT, signature_data_url TEXT, signed_at TEXT, completed_at TEXT, created_by_user_id TEXT, created_at TEXT, updated_at TEXT);",
-    "DROP TABLE IF EXISTS scheduler_notification_log;",
-    "CREATE TABLE scheduler_notification_log (id TEXT PRIMARY KEY, job_id TEXT, user_id TEXT, email TEXT, status TEXT, error TEXT, created_at TEXT);",
-    "DROP TABLE IF EXISTS consult_schedule_requests;",
-    "CREATE TABLE consult_schedule_requests (id TEXT PRIMARY KEY, created_at TEXT, name TEXT, email TEXT, phone TEXT, service_type TEXT, preferred_date TEXT, preferred_time TEXT, address TEXT, message TEXT, status TEXT, source TEXT);",
+    tableDefinition("scheduler_users", ["id", "email", "name", "role", "active", "created_at", "last_login_at"], "id TEXT PRIMARY KEY, email TEXT, name TEXT, role TEXT, active INTEGER, created_at TEXT, last_login_at TEXT"),
+    tableDefinition("scheduler_jobs", ["id", "title", "customer_name", "customer_email", "location", "scheduled_start", "scheduled_end", "status", "public_notes", "internal_notes", "created_at", "updated_at"], "id TEXT PRIMARY KEY, title TEXT, customer_name TEXT, customer_email TEXT, location TEXT, scheduled_start TEXT, scheduled_end TEXT, status TEXT, public_notes TEXT, internal_notes TEXT, created_at TEXT, updated_at TEXT"),
+    tableDefinition("scheduler_job_assignments", ["job_id", "user_id", "created_at"], "job_id TEXT, user_id TEXT, created_at TEXT"),
+    tableDefinition("scheduler_job_completion_documents", ["id", "job_id", "customer_name", "customer_email", "work_performed", "materials_used", "customer_notes", "work_image_data_url", "signature_name", "signature_data_url", "signed_at", "completed_at", "created_by_user_id", "created_at", "updated_at"], "id TEXT PRIMARY KEY, job_id TEXT, customer_name TEXT, customer_email TEXT, work_performed TEXT, materials_used TEXT, customer_notes TEXT, work_image_data_url TEXT, signature_name TEXT, signature_data_url TEXT, signed_at TEXT, completed_at TEXT, created_by_user_id TEXT, created_at TEXT, updated_at TEXT"),
+    tableDefinition("scheduler_notification_log", ["id", "job_id", "user_id", "email", "status", "error", "created_at"], "id TEXT PRIMARY KEY, job_id TEXT, user_id TEXT, email TEXT, status TEXT, error TEXT, created_at TEXT"),
+    tableDefinition("consult_schedule_requests", ["id", "created_at", "name", "email", "phone", "service_type", "preferred_date", "preferred_time", "address", "message", "status", "source"], "id TEXT PRIMARY KEY, created_at TEXT, name TEXT, email TEXT, phone TEXT, service_type TEXT, preferred_date TEXT, preferred_time TEXT, address TEXT, message TEXT, status TEXT, source TEXT"),
   ];
 }
 
-function rowsToSqlInserts(table, rows) {
+function tableDefinition(name, columns, columnSql) {
+  return {
+    name,
+    columns,
+    createSql: `CREATE TABLE ${name} (${columnSql})`,
+  };
+}
+
+function rowsToSqlInserts(table, rows, columns = Object.keys(rows[0] || {})) {
   if (!rows.length) return [`-- ${table}: 0 rows`];
 
-  const columns = Object.keys(rows[0]);
   return rows.map((row) =>
     `INSERT INTO ${table} (${columns.map(sqlIdentifier).join(", ")}) VALUES (${columns.map((column) => sqlValue(row[column])).join(", ")});`
   );
@@ -1219,6 +1248,261 @@ function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function buildSqliteDatabase(tables) {
+  const writer = createSqliteWriter();
+  const tableRoots = tables.map((table) => ({
+    ...table,
+    rootPage: writer.addTable(table.rows, table.columns),
+  }));
+  const schemaRows = tableRoots.map((table) => ({
+    type: "table",
+    name: table.name,
+    tbl_name: table.name,
+    rootpage: table.rootPage,
+    sql: table.createSql,
+  }));
+
+  writer.setSchema(schemaRows, ["type", "name", "tbl_name", "rootpage", "sql"]);
+  return writer.toUint8Array();
+}
+
+function createSqliteWriter() {
+  const pageSize = 4096;
+  const pages = [null];
+  let schemaPage = null;
+
+  const appendPage = (page) => {
+    pages.push(page);
+    return pages.length;
+  };
+
+  const appendOverflowPages = (payload) => {
+    const chunkSize = pageSize - 4;
+    const pageCount = Math.ceil(payload.length / chunkSize);
+    const firstPage = pages.length + 1;
+
+    for (let index = 0; index < pageCount; index += 1) {
+      const pageNo = pages.length + 1;
+      const nextPageNo = index === pageCount - 1 ? 0 : pageNo + 1;
+      const page = new Uint8Array(pageSize);
+      writeUint32(page, 0, nextPageNo);
+      page.set(payload.slice(index * chunkSize, (index + 1) * chunkSize), 4);
+      appendPage(page);
+    }
+
+    return firstPage;
+  };
+
+  const makeTableCell = (rowid, record) => {
+    const usableSize = pageSize;
+    const maxLocal = usableSize - 35;
+    const minLocal = Math.floor(((usableSize - 12) * 32) / 255) - 23;
+    let localPayload = record;
+    let overflowPage = 0;
+
+    if (record.length > maxLocal) {
+      const preferredLocal = minLocal + ((record.length - minLocal) % (usableSize - 4));
+      const localLength = preferredLocal <= maxLocal ? preferredLocal : minLocal;
+      localPayload = record.slice(0, localLength);
+      overflowPage = appendOverflowPages(record.slice(localLength));
+    }
+
+    const prefix = concatBytes(encodeVarint(record.length), encodeVarint(rowid));
+    if (!overflowPage) return concatBytes(prefix, localPayload);
+
+    const overflowPointer = new Uint8Array(4);
+    writeUint32(overflowPointer, 0, overflowPage);
+    return concatBytes(prefix, localPayload, overflowPointer);
+  };
+
+  const makeLeafPages = (rows, columns) => {
+    const leafPages = [];
+    let cells = [];
+    let maxRowid = 0;
+
+    rows.forEach((row, index) => {
+      const rowid = index + 1;
+      const cell = makeTableCell(rowid, encodeSqliteRecord(columns.map((column) => row[column])));
+      const nextCellFootprint = cells.reduce((sum, item) => sum + item.cell.length, 0) + cell.length + 8 + ((cells.length + 1) * 2);
+
+      if (cells.length && nextCellFootprint > pageSize) {
+        leafPages.push({ pageNo: appendPage(makeBtreePage(0x0d, cells)), maxRowid });
+        cells = [];
+      }
+
+      cells.push({ cell });
+      maxRowid = rowid;
+    });
+
+    leafPages.push({ pageNo: appendPage(makeBtreePage(0x0d, cells)), maxRowid });
+    return leafPages;
+  };
+
+  const addTable = (rows, columns) => {
+    const leaves = makeLeafPages(rows, columns);
+    if (leaves.length === 1) return leaves[0].pageNo;
+
+    const interiorCells = leaves.slice(0, -1).map((leaf) => ({
+      leftChild: leaf.pageNo,
+      key: leaf.maxRowid,
+    }));
+    return appendPage(makeBtreePage(0x05, interiorCells, { rightChild: leaves[leaves.length - 1].pageNo }));
+  };
+
+  const setSchema = (rows, columns) => {
+    const cells = rows.map((row, index) => ({
+      cell: makeTableCell(index + 1, encodeSqliteRecord(columns.map((column) => row[column]))),
+    }));
+    schemaPage = makeBtreePage(0x0d, cells, { headerOffset: 100 });
+    writeSqliteHeader(schemaPage, pageSize, pages.length);
+  };
+
+  const toUint8Array = () => {
+    if (!schemaPage) throw new Error("SQLite schema page was not initialized.");
+    pages[0] = schemaPage;
+    const database = new Uint8Array(pages.length * pageSize);
+    pages.forEach((page, index) => database.set(page, index * pageSize));
+    return database;
+  };
+
+  return { addTable, setSchema, toUint8Array };
+}
+
+function makeBtreePage(type, entries, options = {}) {
+  const pageSize = 4096;
+  const headerOffset = options.headerOffset || 0;
+  const headerSize = type === 0x05 ? 12 : 8;
+  const page = new Uint8Array(pageSize);
+  let contentOffset = pageSize;
+  const cells = type === 0x05
+    ? entries.map((entry) => {
+      const key = encodeVarint(entry.key);
+      const cell = new Uint8Array(4 + key.length);
+      writeUint32(cell, 0, entry.leftChild);
+      cell.set(key, 4);
+      return cell;
+    })
+    : entries.map((entry) => entry.cell);
+
+  const pointerStart = headerOffset + headerSize;
+  const pointerBytes = cells.length * 2;
+  const cellBytes = cells.reduce((sum, cell) => sum + cell.length, 0);
+  if (pointerStart + pointerBytes + cellBytes > pageSize) throw new Error("SQLite export page is too large.");
+
+  page[headerOffset] = type;
+  writeUint16(page, headerOffset + 1, 0);
+  writeUint16(page, headerOffset + 3, cells.length);
+  page[headerOffset + 7] = 0;
+  if (type === 0x05) writeUint32(page, headerOffset + 8, options.rightChild || 0);
+
+  cells.forEach((cell, index) => {
+    contentOffset -= cell.length;
+    page.set(cell, contentOffset);
+    writeUint16(page, pointerStart + (index * 2), contentOffset);
+  });
+
+  writeUint16(page, headerOffset + 5, contentOffset);
+  return page;
+}
+
+function writeSqliteHeader(page, pageSize, pageCount) {
+  page.set(new TextEncoder().encode("SQLite format 3\0"), 0);
+  writeUint16(page, 16, pageSize);
+  page[18] = 1;
+  page[19] = 1;
+  page[20] = 0;
+  page[21] = 64;
+  page[22] = 32;
+  page[23] = 32;
+  writeUint32(page, 24, 1);
+  writeUint32(page, 28, pageCount);
+  writeUint32(page, 40, 1);
+  writeUint32(page, 44, 4);
+  writeUint32(page, 56, 1);
+  writeUint32(page, 92, 1);
+  writeUint32(page, 96, 3045000);
+}
+
+function encodeSqliteRecord(values) {
+  const fields = values.map(sqliteField);
+  const serialTypes = fields.map((field) => encodeVarint(field.serialType));
+  let headerLength = serialTypes.reduce((sum, bytes) => sum + bytes.length, 0) + 1;
+  let headerSize = encodeVarint(headerLength);
+
+  while (headerLength !== serialTypes.reduce((sum, bytes) => sum + bytes.length, 0) + headerSize.length) {
+    headerLength = serialTypes.reduce((sum, bytes) => sum + bytes.length, 0) + headerSize.length;
+    headerSize = encodeVarint(headerLength);
+  }
+
+  return concatBytes(headerSize, ...serialTypes, ...fields.map((field) => field.bytes));
+}
+
+function sqliteField(value) {
+  if (value === null || value === undefined) return { serialType: 0, bytes: new Uint8Array() };
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) {
+    return sqliteIntegerField(value);
+  }
+
+  const bytes = new TextEncoder().encode(String(value));
+  return { serialType: 13 + (bytes.length * 2), bytes };
+}
+
+function sqliteIntegerField(value) {
+  const ranges = [
+    [1, -0x80, 0x7f],
+    [2, -0x8000, 0x7fff],
+    [3, -0x800000, 0x7fffff],
+    [4, -0x80000000, 0x7fffffff],
+    [6, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+  ];
+  const [bytes] = ranges.find(([, min, max]) => value >= min && value <= max) || [6];
+  const out = new Uint8Array(bytes);
+  let big = BigInt(value);
+  if (big < 0) big += 1n << BigInt(bytes * 8);
+
+  for (let index = bytes - 1; index >= 0; index -= 1) {
+    out[index] = Number(big & 0xffn);
+    big >>= 8n;
+  }
+
+  return { serialType: bytes === 6 ? 6 : bytes, bytes: out };
+}
+
+function encodeVarint(value) {
+  let big = BigInt(value);
+  const bytes = [Number(big & 0x7fn)];
+  big >>= 7n;
+
+  while (big > 0n) {
+    bytes.unshift(Number(big & 0x7fn) | 0x80);
+    big >>= 7n;
+  }
+
+  return Uint8Array.from(bytes);
+}
+
+function concatBytes(...chunks) {
+  const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return bytes;
+}
+
+function writeUint16(bytes, offset, value) {
+  bytes[offset] = (value >>> 8) & 0xff;
+  bytes[offset + 1] = value & 0xff;
+}
+
+function writeUint32(bytes, offset, value) {
+  bytes[offset] = (value >>> 24) & 0xff;
+  bytes[offset + 1] = (value >>> 16) & 0xff;
+  bytes[offset + 2] = (value >>> 8) & 0xff;
+  bytes[offset + 3] = value & 0xff;
 }
 
 function parseImageDataUrl(value) {

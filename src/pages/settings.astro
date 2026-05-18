@@ -161,7 +161,7 @@ import AppShell from "../layouts/AppShell.astro";
       <section class="card">
         <h2>Export Records</h2>
         <p class="settings-note">
-          Download a spreadsheet summary without image data, or use the SQLite SQL archive for full-fidelity records with original signature and work image data URLs intact.
+          Download a spreadsheet summary without image data, or use a full-fidelity SQLite database or SQL archive with original signature and work image data URLs intact.
         </p>
         <form class="form-grid" data-export-form>
           <div class="grid two">
@@ -177,6 +177,7 @@ import AppShell from "../layouts/AppShell.astro";
           <div class="field">
             <label for="export-format">Export format</label>
             <select id="export-format" name="format">
+              <option value="sqlite">SQLite database</option>
               <option value="sql">SQLite SQL archive</option>
               <option value="csv">Spreadsheet CSV</option>
             </select>
@@ -349,9 +350,9 @@ import AppShell from "../layouts/AppShell.astro";
 
       setFormStatus(form, "Preparing export...");
       try {
-        const format = params.get("format") || "sql";
+        const format = params.get("format") || "sqlite";
         const response = await settingsApiFetch(`/api/admin/database/export?${params.toString()}`, {
-          headers: { Accept: format === "sql" ? "application/sql" : "text/csv" }
+          headers: { Accept: format === "sqlite" ? "application/vnd.sqlite3" : format === "sql" ? "application/sql" : "text/csv" }
         });
         if (!response.ok) await readJsonResponse(response);
         const blob = await response.blob();
