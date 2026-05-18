@@ -271,26 +271,38 @@ async function finishGoogleAuth(request, env, url) {
 }
 
 async function listJobs(request, env, user) {
-  const statement = user.role === "supervisor"
-    ? env.SCHEDULER_DB.prepare(jobSelectSql("1 = 1"))
-    : env.SCHEDULER_DB.prepare(jobSelectSql("EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)")).bind(user.id);
-  const rows = await statement.all();
+  const whereClause = user.role === "supervisor"
+    ? "1 = 1"
+    : "EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)";
+  const binds = user.role === "supervisor" ? [] : [user.id];
+  const rows = await queryJobs(env, whereClause, binds);
   return json(request, env, { jobs: normalizeJobs(rows.results ?? []) });
 }
 
-function jobSelectSql(whereClause) {
+async function queryJobs(env, whereClause, binds = []) {
+  try {
+    return await env.SCHEDULER_DB.prepare(jobSelectSql(whereClause)).bind(...binds).all();
+  } catch (error) {
+    if (!isMissingD1TableError(error) || !/job_completion_documents/i.test(errorMessage(error))) throw error;
+    return env.SCHEDULER_DB.prepare(jobSelectSql(whereClause, { includeCompletion: false })).bind(...binds).all();
+  }
+}
+
+function jobSelectSql(whereClause, options = {}) {
+  const includeCompletion = options.includeCompletion !== false;
   return `
     SELECT jobs.id, jobs.title, jobs.location, jobs.scheduled_start, jobs.scheduled_end, jobs.status,
       jobs.customer_name, jobs.customer_email, jobs.public_notes, jobs.internal_notes, jobs.created_at, jobs.updated_at,
-      completion.id AS completion_document_id, completion.signed_at AS completion_signed_at,
-      completion.customer_name AS completion_customer_name,
+      ${includeCompletion ? "completion.id" : "NULL"} AS completion_document_id,
+      ${includeCompletion ? "completion.signed_at" : "NULL"} AS completion_signed_at,
+      ${includeCompletion ? "completion.customer_name" : "NULL"} AS completion_customer_name,
       GROUP_CONCAT(users.id) AS assigned_user_ids,
       GROUP_CONCAT(COALESCE(users.name, users.email)) AS assigned_user_names,
       GROUP_CONCAT(users.email) AS assigned_user_emails
     FROM jobs
     LEFT JOIN job_assignments ON job_assignments.job_id = jobs.id
     LEFT JOIN users ON users.id = job_assignments.user_id
-    LEFT JOIN job_completion_documents completion ON completion.job_id = jobs.id
+    ${includeCompletion ? "LEFT JOIN job_completion_documents completion ON completion.job_id = jobs.id" : ""}
     WHERE ${whereClause}
     GROUP BY jobs.id
     ORDER BY COALESCE(jobs.scheduled_start, jobs.created_at) ASC
@@ -347,7 +359,7 @@ async function saveJob(request, env, user, id = crypto.randomUUID()) {
   }
 
   await notifyAssignedWorkers(env, id, existing ? "updated" : "created");
-  const saved = await env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(id).all();
+  const saved = await queryJobs(env, "jobs.id = ?", [id]);
   return json(request, env, { job: normalizeJobs(saved.results ?? [])[0] }, { status: existing ? 200 : 201 });
 }
 
@@ -396,7 +408,7 @@ async function saveCompletionDocument(request, env, user, jobId) {
 
   await env.SCHEDULER_DB.prepare("UPDATE jobs SET status = 'complete', updated_at = datetime('now') WHERE id = ?").bind(jobId).run();
 
-  const saved = await env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(jobId).all();
+  const saved = await queryJobs(env, "jobs.id = ?", [jobId]);
   return json(request, env, {
     job: normalizeJobs(saved.results ?? [])[0],
     completion: await findCompletionDocument(env, jobId),
@@ -405,8 +417,8 @@ async function saveCompletionDocument(request, env, user, jobId) {
 
 async function getAuthorizedJob(env, user, jobId) {
   const rows = await (user.role === "supervisor"
-    ? env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(jobId).all()
-    : env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ? AND EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)")).bind(jobId, user.id).all());
+    ? queryJobs(env, "jobs.id = ?", [jobId])
+    : queryJobs(env, "jobs.id = ? AND EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)", [jobId, user.id]));
   const job = normalizeJobs(rows.results ?? [])[0];
   if (!job) throw new HttpError(404, "Job not found");
   return job;
@@ -817,10 +829,10 @@ async function renderIcsFeed(env, token) {
   const feed = await env.SCHEDULER_DB.prepare("SELECT id, feed_type, user_id, active FROM calendar_feeds WHERE token = ?").bind(token).first();
   if (!feed || feed.active !== 1) return new Response("Feed not found", { status: 404 });
 
-  const jobs = normalizeJobs((await (feed.feed_type === "supervisor_all"
-    ? env.SCHEDULER_DB.prepare(jobSelectSql("jobs.status != 'cancelled'")).all()
-    : env.SCHEDULER_DB.prepare(jobSelectSql("jobs.status != 'cancelled' AND EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)")).bind(feed.user_id).all()
-  )).results ?? []);
+  const jobRows = await (feed.feed_type === "supervisor_all"
+    ? queryJobs(env, "jobs.status != 'cancelled'")
+    : queryJobs(env, "jobs.status != 'cancelled' AND EXISTS (SELECT 1 FROM job_assignments worker_filter WHERE worker_filter.job_id = jobs.id AND worker_filter.user_id = ?)", [feed.user_id]));
+  const jobs = normalizeJobs(jobRows.results ?? []);
 
   const consultations = feed.feed_type === "supervisor_all" && env.CONSULT_DB
     ? (await env.CONSULT_DB.prepare("SELECT id, name, preferred_date, preferred_time, address, service_type, message FROM schedule_requests WHERE status != 'cancelled' ORDER BY preferred_date ASC LIMIT 200").all()).results ?? []
@@ -869,7 +881,7 @@ function buildIcs(jobs, consultations) {
 }
 
 async function notifyAssignedWorkers(env, jobId, action) {
-  const jobRows = await env.SCHEDULER_DB.prepare(jobSelectSql("jobs.id = ?")).bind(jobId).all();
+  const jobRows = await queryJobs(env, "jobs.id = ?", [jobId]);
   const job = normalizeJobs(jobRows.results ?? [])[0];
   if (!job) return;
 
@@ -1640,8 +1652,11 @@ function errorResponse(request, env, error) {
 }
 
 function isMissingD1TableError(error) {
-  const message = error instanceof Error ? error.message : String(error || "");
-  return /no such table/i.test(message);
+  return /no such table/i.test(errorMessage(error));
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error || "");
 }
 
 function randomState() {
