@@ -3,6 +3,12 @@ const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 
 const DEFAULT_FRONTEND_ORIGIN = "http://localhost:4325";
+const DEFAULT_PRODUCTION_FRONTEND_ORIGINS = [
+  "https://scheduler.serverboi.org",
+  "https://www.scheduler.serverboi.org",
+  "https://serverboi.org",
+  "https://www.serverboi.org",
+];
 const DEFAULT_RESEND_FROM = "noreply@updates.serverboi.org";
 const SESSION_COOKIE = "scheduler_session";
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
@@ -1601,14 +1607,14 @@ function splitCsv(value) {
 
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin");
-  const allowedOrigins = new Set([DEFAULT_FRONTEND_ORIGIN, env.FRONTEND_ORIGIN, env.APP_ORIGIN].filter(Boolean));
+  const allowedOrigins = allowedCorsOrigins(env);
   const headers = new Headers({
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization",
     "Vary": "Origin",
   });
-  if (origin && (allowedOrigins.has(origin) || isDevLocalOrigin(origin, env))) headers.set("Access-Control-Allow-Origin", origin);
+  if (origin && (allowedOrigins.has(normalizeOrigin(origin)) || isDevLocalOrigin(origin, env))) headers.set("Access-Control-Allow-Origin", origin);
   return headers;
 }
 
@@ -1670,8 +1676,39 @@ function shouldPassSessionInRedirect(url, env) {
 }
 
 function isAllowedFrontendOrigin(origin, env) {
-  const allowedOrigins = new Set([DEFAULT_FRONTEND_ORIGIN, env.FRONTEND_ORIGIN].filter(Boolean));
-  return allowedOrigins.has(origin) || isDevLocalOrigin(origin, env);
+  return allowedFrontendOrigins(env).has(normalizeOrigin(origin)) || isDevLocalOrigin(origin, env);
+}
+
+function allowedCorsOrigins(env) {
+  return new Set([
+    ...allowedFrontendOrigins(env),
+    normalizeOrigin(env.APP_ORIGIN),
+  ].filter(Boolean));
+}
+
+function allowedFrontendOrigins(env) {
+  return new Set([
+    DEFAULT_FRONTEND_ORIGIN,
+    ...DEFAULT_PRODUCTION_FRONTEND_ORIGINS,
+    ...originList(env.FRONTEND_ORIGIN),
+    ...originList(env.FRONTEND_ORIGINS),
+  ].map(normalizeOrigin).filter(Boolean));
+}
+
+function originList(value) {
+  return String(value || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function normalizeOrigin(value) {
+  if (!value) return "";
+  try {
+    return new URL(value).origin;
+  } catch {
+    return String(value).replace(/\/+$/, "");
+  }
 }
 
 function isDevLocalOrigin(origin, env) {
